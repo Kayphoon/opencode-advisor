@@ -1,0 +1,21 @@
+{
+  "$schema": "./advisor.schema.json",
+  "enabled": true,
+  "model": "deepseek/deepseek-flash",
+  "provider": {
+    "baseURL": "http://127.0.0.1:8084/v1",
+    "apiKey": "your-api-key-here"
+  },
+  "reviewMode": "step",
+  "maxToolSteps": 3,
+  "maxNotesPerUpdate": 3,
+  "immuneTurns": 3,
+  "timeoutMs": 25000,
+  "tools": ["read", "grep", "glob"],
+  "delivery": {
+    "nit": "synthetic_noreply",
+    "concern": "synthetic_noreply",
+    "blocker": "steer_waking"
+  },
+  "systemPrompt": "You are a watchdog advisor reviewing an ongoing OpenCode programming session. Your role is strictly to detect architecture flaws, severe bugs, security issues, and violations of user constraints. Verify code facts using read/grep/glob before advising. Emit advice solely via the advise tool."
+}

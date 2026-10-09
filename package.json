@@ -1,0 +1,47 @@
+{
+  "name": "opencode-advisor",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "OMP-style background Reviewer Agent plugin for OpenCode V2 with read-only tools and anti-loop safety.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "advisor.example.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test dist/test/advisor.test.js",
+    "prepublishOnly": "npm run build && npm test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Kayphoon/opencode-advisor.git"
+  },
+  "keywords": [
+    "opencode",
+    "plugin",
+    "advisor",
+    "watchdog",
+    "reviewer",
+    "omp"
+  ],
+  "author": "Kayphoon",
+  "license": "MIT",
+  "dependencies": {
+    "@opencode/plugin": ">=2.0.0"
+  },
+  "devDependencies": {
+    "@types/node": ">=20.0.0",
+    "typescript": ">=5.0.0"
+  }
+}
