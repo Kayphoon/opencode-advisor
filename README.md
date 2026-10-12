@@ -337,17 +337,58 @@ npm run build
 
 ### 2. Register with OpenCode
 
-Add the plugin to your project or global `opencode.jsonc`:
+Add the plugin to your global `~/.config/opencode/opencode.jsonc` (or a project config):
 
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugins": [
+  "plugin": [
+    "oh-my-opencode-slim@latest",
     "github:Kayphoon/opencode-advisor"
-    // or a local path / package name, optionally with options:
-    // { "package": "/root/oc_plugin", "options": { "model": "deepseek/deepseek-flash" } }
   ]
 }
+```
+
+> **Note:** depending on your OpenCode build, the config key may be `plugin` (observed working on v2.0.19) or `plugins`. Match whatever key your existing plugin entries already use.
+
+Then restart the background service:
+
+```bash
+opencode service restart
+```
+
+Verify it loaded:
+
+```bash
+opencode api get /api/plugin
+# → { "id": "opencode-advisor", "source": { "type": "package", "target": "github:Kayphoon/opencode-advisor" }, "state": { "status": "active" } }
+```
+
+#### ⚠️ Known install caveat (OpenCode CLI bug)
+
+On some OpenCode builds, `opencode plugin add github:...` fails with:
+
+```
+NpmInstallFailedError (cause: Error: git dep preparation failed)
+```
+
+even though a plain `npm install github:Kayphoon/opencode-advisor` of the same repository succeeds. This is a bug in the CLI's bundled package installer's git-dependency preparation, not in this package.
+
+**Workaround** — populate OpenCode's package cache directly:
+
+```bash
+SLUG="$HOME/.cache/opencode/npm/git-opencode-advisor-39a33a901f74/$(date +%s%3N)"
+mkdir -p "$SLUG"
+printf '{"dependencies":{"opencode-advisor":"github:Kayphoon/opencode-advisor"}}\n' > "$SLUG/package.json"
+( cd "$SLUG" && npm install --no-audit --no-fund )
+```
+
+Then add the `github:...` entry to your config and run `opencode service restart`.
+
+**Alternative (no cache hack):** point the config at a local checkout instead — OpenCode resolves local plugin paths directly:
+
+```jsonc
+{ "plugin": ["/path/to/opencode-advisor"] }
 ```
 
 ### 3. (Optional) Dedicated config
