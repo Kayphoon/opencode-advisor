@@ -1,4 +1,4 @@
-import type { AdviceNote, AdvisorConfig, AdvisorSessionState } from "./types.js";
+import type { AdviceNote, AdvisorConfig, AdvisorSessionState, SessionMessageLike } from "./types.js";
 export interface SessionClientLike {
     session: {
         synthetic: (input: {
@@ -17,5 +17,8 @@ export interface SessionClientLike {
         }) => Promise<unknown>;
     };
 }
+/** Render one note, including verified evidence and any suggested patch. */
+export declare function formatNote(item: AdviceNote): string;
 export declare function deliverNotes(notes: AdviceNote[], sessionID: string, state: AdvisorSessionState, config: AdvisorConfig, client: SessionClientLike): Promise<void>;
+export type { SessionMessageLike };
 //# sourceMappingURL=delivery.d.ts.map

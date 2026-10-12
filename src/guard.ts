@@ -35,56 +35,78 @@ const SEVERITY_WEIGHT: Record<AdviceSeverity, number> = {
   blocker: 3,
 };
 
+export interface GuardOptions {
+  maxNotes: number;
+  /** When true, a blocker without evidence is downgraded to concern. */
+  requireEvidence: boolean;
+}
+
+/**
+ * Filter, deduplicate, and de-escalate raw reviewer notes before delivery.
+ *
+ * Order of enforcement:
+ *  1. content-free phrase suppression
+ *  2. evidence requirement (blocker → concern when unverified)
+ *  3. severity-aware dedupe (by note hash and by evidence location)
+ *  4. immuneTurns cooldown downgrade
+ *  5. per-update quota
+ */
 export function filterAndGuardNotes(
   notes: AdviceNote[],
   state: AdvisorSessionState,
-  maxNotes: number
+  options: GuardOptions
 ): AdviceNote[] {
   const accepted: AdviceNote[] = [];
 
   for (const item of notes) {
-    if (accepted.length >= maxNotes) break;
+    if (accepted.length >= options.maxNotes) break;
 
     const trimmed = item.note.trim();
     if (!trimmed) continue;
 
     // 1. Content-free phrase suppression
-    const isContentFree = CONTENT_FREE_PATTERNS.some((re) => re.test(trimmed));
-    if (isContentFree) continue;
+    if (CONTENT_FREE_PATTERNS.some((re) => re.test(trimmed))) continue;
 
     const normalized = normalizeText(trimmed);
     if (normalized.length < 5) continue;
 
-    const hash = hashNote(normalized);
-
-    // 2. Deduplication (check seen hashes)
-    const existingIndex = state.seenHashes.indexOf(hash);
-    if (existingIndex !== -1) {
-      // Allow only if this is an explicit severity upgrade
-      continue;
-    }
-
     let effectiveSeverity: AdviceSeverity = item.severity;
 
-    // 3. ImmuneTurns Cooldown
-    // If under cooldown, downgrade concern/blocker to avoid repetitive wake storms
-    if (state.userTurnCount < state.immuneUntilUserTurn) {
-      if (effectiveSeverity === "concern") {
-        effectiveSeverity = "nit";
-      }
+    // 2. Evidence requirement (fact-checking enforcement)
+    if (options.requireEvidence && effectiveSeverity === "blocker" && !item.evidence) {
+      effectiveSeverity = "concern";
+    }
+
+    // 3. Dedupe by note hash AND by verified evidence location
+    const hash = hashNote(normalized);
+    const evidenceKey = item.evidence
+      ? `ev:${item.evidence.file}:${item.evidence.line ?? ""}`
+      : "";
+    const evidenceHash = evidenceKey ? hashNote(evidenceKey) : "";
+
+    if (state.seenHashes.includes(hash)) continue;
+    if (evidenceHash && state.seenHashes.includes(evidenceHash)) continue;
+
+    // 4. Cooldown downgrade
+    if (state.userTurnCount < state.immuneUntilUserTurn && effectiveSeverity === "concern") {
+      effectiveSeverity = "nit";
     }
 
     accepted.push({
       note: trimmed,
       severity: effectiveSeverity,
+      evidence: item.evidence,
+      suggestedPatch: item.suggestedPatch,
     });
 
-    // Record into FIFO hash ring (limit 64)
     state.seenHashes.push(hash);
-    if (state.seenHashes.length > 64) {
+    if (evidenceHash) state.seenHashes.push(evidenceHash);
+    while (state.seenHashes.length > 64) {
       state.seenHashes.shift();
     }
   }
 
   return accepted;
 }
+
+export { SEVERITY_WEIGHT };

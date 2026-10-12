@@ -1,44 +1,65 @@
-import { getOrCreateSessionState, resetConsecutiveAdvisorTurns } from "./state.js";
+import { getOrCreateSessionState, resetConsecutiveAdvisorTurns, recordDiagnostics } from "./state.js";
 import { extractSessionDelta, type RawMessage } from "./transcript.js";
 import { runReviewerAgent } from "./reviewer.js";
 import { filterAndGuardNotes } from "./guard.js";
-import { deliverNotes, type SessionClientLike } from "./delivery.js";
-import type { AdvisorConfig, OpenCodeV2Event } from "./types.js";
+import { deliverNotes } from "./delivery.js";
+import { collectDeterministicSignals } from "./enrich.js";
+import type { AdvisorConfig, OpenCodeV2Event, PluginContextLike, ResolvedModelConfig } from "./types.js";
 
-export interface PluginContextLike extends SessionClientLike {
-  event: {
-    subscribe: (options?: { signal?: AbortSignal }) => AsyncIterable<OpenCodeV2Event>;
-  };
-  location: {
-    directory: string;
-  };
-  session: {
-    context: (input: { sessionID: string }) => Promise<RawMessage[]>;
-    synthetic: (input: {
-      sessionID: string;
-      text: string;
-      metadata?: Record<string, unknown>;
-      resume?: boolean;
-      delivery?: "steer" | "queue";
-    }) => Promise<unknown>;
-    prompt: (input: {
-      sessionID: string;
-      text: string;
-      metadata?: Record<string, unknown>;
-      resume?: boolean;
-      delivery?: "steer" | "queue";
-    }) => Promise<unknown>;
-  };
+export type { PluginContextLike };
+
+export interface ObserverDeps {
+  config: AdvisorConfig;
+  watchdog: ResolvedModelConfig;
 }
 
-export function startEventObserver(ctx: PluginContextLike, config: AdvisorConfig, rootSignal: AbortSignal): void {
-  const debounceTimers = new Map<string, NodeJS.Timeout>();
+function isDiagnosticEvent(type: string): boolean {
+  return type.toLowerCase().includes("diagnostic");
+}
+
+function extractDiagnostics(event: OpenCodeV2Event): string[] {
+  const data = event.data ?? {};
+  const list: string[] = [];
+
+  const push = (value: unknown): void => {
+    if (typeof value === "string" && value.trim()) {
+      list.push(value.trim());
+      return;
+    }
+    if (value && typeof value === "object") {
+      const obj = value as Record<string, unknown>;
+      const file = typeof obj["file"] === "string" ? obj["file"] : typeof obj["uri"] === "string" ? obj["uri"] : "";
+      const message =
+        typeof obj["message"] === "string"
+          ? obj["message"]
+          : typeof obj["text"] === "string"
+            ? obj["text"]
+            : "";
+      const line = typeof obj["line"] === "number" ? obj["line"] : undefined;
+      if (message) {
+        list.push(`${file}${line !== undefined ? `:${line}` : ""} ${message}`.trim());
+      }
+    }
+  };
+
+  for (const key of ["diagnostics", "items", "errors", "problems"]) {
+    const value = data[key];
+    if (Array.isArray(value)) value.forEach(push);
+  }
+  if (typeof data["diagnostic"] === "string") push(data["diagnostic"]);
+
+  return list;
+}
+
+export function startEventObserver(ctx: PluginContextLike, deps: ObserverDeps, rootSignal: AbortSignal): void {
+  const { config, watchdog } = deps;
+  const reviewInterval = Math.max(1, config.reviewInterval ?? 1);
+  const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   async function scheduleReview(sessionID: string, workspaceDir: string): Promise<void> {
     const state = getOrCreateSessionState(sessionID, workspaceDir);
     if (state.isReviewing) return;
 
-    // Clear existing timer
     const existing = debounceTimers.get(sessionID);
     if (existing) clearTimeout(existing);
 
@@ -46,25 +67,29 @@ export function startEventObserver(ctx: PluginContextLike, config: AdvisorConfig
       debounceTimers.delete(sessionID);
       if (rootSignal.aborted || state.isReviewing) return;
 
+      // reviewInterval: review every Nth eligible update. Skipped deltas are held
+      // (the cursor is not advanced) and merged into the next review.
+      state.eligibleUpdates += 1;
+      if (state.eligibleUpdates % reviewInterval !== 0) return;
+
       state.isReviewing = true;
       const reviewAbort = new AbortController();
       state.abortController = reviewAbort;
 
-      const timeout = setTimeout(() => {
-        reviewAbort.abort();
-      }, config.timeoutMs || 25000);
+      const timeout = setTimeout(() => reviewAbort.abort(), watchdog.timeoutMs);
 
       try {
-        // 1. Fetch messages
         const messages = await ctx.session.context({ sessionID });
         if (!messages || messages.length === 0) return;
 
-        // 2. Extract delta
+        const signals = await collectDeterministicSignals(ctx, state, reviewAbort.signal);
+
         const { deltaText, newLastID, hasMeaningfulWork } = extractSessionDelta(
-          messages,
+          messages as RawMessage[],
           state.lastEvaluatedMessageID,
           state.rollingSummary,
-          state.seenHashes
+          state.seenHashes,
+          signals
         );
 
         if (!hasMeaningfulWork || !deltaText.trim()) {
@@ -74,22 +99,19 @@ export function startEventObserver(ctx: PluginContextLike, config: AdvisorConfig
 
         console.log(`[advisor] Reviewing delta for session ${sessionID} (${deltaText.length} chars)...`);
 
-        // 3. Run Reviewer Agent
         const rawNotes = await runReviewerAgent(
           deltaText,
           workspaceDir || ctx.location.directory,
-          config,
+          watchdog,
+          config.requireEvidence !== false,
           reviewAbort.signal
         );
 
-        // 4. Guard & Deduplicate
-        const guardedNotes = filterAndGuardNotes(
-          rawNotes,
-          state,
-          config.maxNotesPerUpdate || 3
-        );
+        const guardedNotes = filterAndGuardNotes(rawNotes, state, {
+          maxNotes: config.maxNotesPerUpdate ?? 3,
+          requireEvidence: config.requireEvidence !== false,
+        });
 
-        // 5. Deliver
         if (guardedNotes.length > 0) {
           console.log(`[advisor] Delivering ${guardedNotes.length} notes to session ${sessionID}.`);
           await deliverNotes(guardedNotes, sessionID, state, config, ctx);
@@ -116,19 +138,19 @@ export function startEventObserver(ctx: PluginContextLike, config: AdvisorConfig
         if (rootSignal.aborted) break;
 
         const sessionID =
-          (event.data?.["sessionID"] as string) ||
-          (event.data?.["id"] as string) ||
-          "";
-
+          (event.data?.["sessionID"] as string) || (event.data?.["id"] as string) || "";
         if (!sessionID || !sessionID.startsWith("ses")) continue;
 
-        // Check workspace directory match
         const eventDir = event.location?.directory || ctx.location.directory;
-        if (ctx.location.directory && eventDir !== ctx.location.directory) {
-          continue;
+        if (ctx.location.directory && eventDir !== ctx.location.directory) continue;
+
+        // Deterministic signals: capture LSP diagnostics as they stream.
+        if (isDiagnosticEvent(event.type)) {
+          const diagnostics = extractDiagnostics(event);
+          if (diagnostics.length > 0) recordDiagnostics(sessionID, diagnostics);
         }
 
-        // 1. If genuine user input admitted, reset consecutive advisor turns counter
+        // Genuine user input resets the circuit breaker.
         if (
           event.type === "session.inbox.enqueued" ||
           event.type === "session.prompt" ||
@@ -140,7 +162,7 @@ export function startEventObserver(ctx: PluginContextLike, config: AdvisorConfig
           }
         }
 
-        // 2. Turn completion triggers
+        // Turn completion triggers a (debounced, interval-gated) review.
         if (
           event.type === "session.step.ended" ||
           event.type === "session.execution.succeeded" ||
@@ -151,7 +173,10 @@ export function startEventObserver(ctx: PluginContextLike, config: AdvisorConfig
       }
     } catch (err: unknown) {
       if (!rootSignal.aborted) {
-        console.warn(`[advisor] event stream disconnected:`, err instanceof Error ? err.message : String(err));
+        console.warn(
+          `[advisor] event stream disconnected:`,
+          err instanceof Error ? err.message : String(err)
+        );
       }
     }
   })();

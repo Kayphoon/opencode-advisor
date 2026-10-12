@@ -1,21 +1,36 @@
 {
   "$schema": "./advisor.schema.json",
   "enabled": true,
-  "model": "deepseek/deepseek-flash",
+
+  "watchdogModel": "deepseek/deepseek-flash",
+  "consultModel": "moonshotai/kimi-k3",
+
   "provider": {
     "baseURL": "http://127.0.0.1:8084/v1",
     "apiKey": "your-api-key-here"
   },
+
   "reviewMode": "step",
+  "reviewInterval": 1,
   "maxToolSteps": 3,
   "maxNotesPerUpdate": 3,
   "immuneTurns": 3,
   "timeoutMs": 25000,
+  "requireEvidence": true,
   "tools": ["read", "grep", "glob"],
+
+  "consult": {
+    "enabled": true,
+    "model": "moonshotai/kimi-k3",
+    "maxTokens": 1024,
+    "includeContextMessages": 12
+  },
+
   "delivery": {
     "nit": "synthetic_noreply",
     "concern": "synthetic_noreply",
     "blocker": "steer_waking"
   },
-  "systemPrompt": "You are a watchdog advisor reviewing an ongoing OpenCode programming session. Your role is strictly to detect architecture flaws, severe bugs, security issues, and violations of user constraints. Verify code facts using read/grep/glob before advising. Emit advice solely via the advise tool."
+
+  "systemPrompt": "You are a watchdog advisor reviewing an ongoing OpenCode programming session. Detect architecture flaws, severe bugs, security issues, and violations of user constraints. Verify every suspicion against the real code with read/grep/glob before advising. Cite evidence (file, line, observedFact) for concern/blocker. Emit advice only via the advise tool."
 }

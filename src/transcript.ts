@@ -28,7 +28,8 @@ export function extractSessionDelta(
   allMessages: RawMessage[],
   lastEvaluatedID: string | null,
   rollingSummary: string,
-  recentNotes: string[]
+  recentNotes: string[],
+  extraSignals = ""
 ): { deltaText: string; newLastID: string | null; hasMeaningfulWork: boolean } {
   if (!allMessages || allMessages.length === 0) {
     return { deltaText: "", newLastID: null, hasMeaningfulWork: false };
@@ -99,6 +100,9 @@ export function extractSessionDelta(
   }
 
   let finalTranscript = goalHeader;
+  if (extraSignals) {
+    finalTranscript += extraSignals;
+  }
   if (rollingSummary.trim()) {
     finalTranscript += `### Story So Far (Summary):\n${rollingSummary}\n\n`;
   }

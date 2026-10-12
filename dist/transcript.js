@@ -8,7 +8,7 @@ export function truncateToolOutput(text, headLines = 30, tailLines = 10) {
     const omitted = lines.length - headLines - tailLines;
     return `${head.join("\n")}\n... [${omitted} lines of output truncated for review] ...\n${tail.join("\n")}`;
 }
-export function extractSessionDelta(allMessages, lastEvaluatedID, rollingSummary, recentNotes) {
+export function extractSessionDelta(allMessages, lastEvaluatedID, rollingSummary, recentNotes, extraSignals = "") {
     if (!allMessages || allMessages.length === 0) {
         return { deltaText: "", newLastID: null, hasMeaningfulWork: false };
     }
@@ -68,6 +68,9 @@ export function extractSessionDelta(allMessages, lastEvaluatedID, rollingSummary
         return { deltaText: "", newLastID, hasMeaningfulWork: false };
     }
     let finalTranscript = goalHeader;
+    if (extraSignals) {
+        finalTranscript += extraSignals;
+    }
     if (rollingSummary.trim()) {
         finalTranscript += `### Story So Far (Summary):\n${rollingSummary}\n\n`;
     }

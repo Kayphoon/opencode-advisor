@@ -12,8 +12,10 @@ export function getOrCreateSessionState(sessionID: string, workspaceDir: string)
       consecutiveAdvisorTurns: 0,
       userTurnCount: 0,
       immuneUntilUserTurn: 0,
+      eligibleUpdates: 0,
       seenHashes: [],
       rollingSummary: "",
+      diagnostics: [],
       isReviewing: false,
       abortController: null,
     };
@@ -25,12 +27,19 @@ export function getOrCreateSessionState(sessionID: string, workspaceDir: string)
   return state;
 }
 
+/** A genuine (non-advisor) user message: reset the circuit breaker and advance the user turn. */
 export function resetConsecutiveAdvisorTurns(sessionID: string): void {
   const state = sessionStates.get(sessionID);
   if (state) {
     state.consecutiveAdvisorTurns = 0;
     state.userTurnCount += 1;
   }
+}
+
+export function recordDiagnostics(sessionID: string, diagnostics: string[]): void {
+  const state = sessionStates.get(sessionID);
+  if (!state) return;
+  state.diagnostics = diagnostics.slice(-20);
 }
 
 export function removeSessionState(sessionID: string): void {

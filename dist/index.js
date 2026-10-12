@@ -1,7 +1,8 @@
 import { Plugin } from "@opencode/plugin";
-import { loadAdvisorConfig } from "./config.js";
+import { isConsultEnabled, loadAdvisorConfig, resolveConsult, resolveWatchdog } from "./config.js";
 import { startEventObserver } from "./trigger.js";
 import { clearAllSessionStates } from "./state.js";
+import { createConsultTool } from "./tools/consult.js";
 export const AdvisorPlugin = Plugin.define({
     id: "opencode-advisor",
     async setup(ctx) {
@@ -10,15 +11,44 @@ export const AdvisorPlugin = Plugin.define({
             console.log("[opencode-advisor] Advisor disabled via config.");
             return () => { };
         }
-        console.log(`[opencode-advisor] Initialized with model: ${config.model}, reviewMode: ${config.reviewMode}, maxToolSteps: ${config.maxToolSteps}`);
+        const watchdog = resolveWatchdog(config);
+        const consult = resolveConsult(config);
+        console.log(`[opencode-advisor] watchdog=${watchdog.model} (tools: ${watchdog.tools.join(",")}) ` +
+            `consult=${consult.model} reviewMode=${config.reviewMode} interval=${config.reviewInterval ?? 1}`);
+        const pluginCtx = ctx;
         const abortController = new AbortController();
-        // Start background event observer
-        startEventObserver(ctx, config, abortController.signal);
-        // Return cleanup hook for plugin unload
-        return () => {
+        const disposers = [];
+        // Intrinsic consultation tool (Claude Code "advisor tool" pattern).
+        if (isConsultEnabled(config) && pluginCtx.tool?.transform) {
+            try {
+                const registration = await pluginCtx.tool.transform((editor) => {
+                    editor.add(createConsultTool({
+                        consult,
+                        getContextMessages: (sessionID) => pluginCtx.session.context({ sessionID }),
+                        includeContextMessages: config.consult?.includeContextMessages ?? 12,
+                    }));
+                });
+                disposers.push(() => registration.dispose());
+                console.log("[opencode-advisor] registered consult_advisor tool.");
+            }
+            catch (err) {
+                console.warn("[opencode-advisor] failed to register consult_advisor:", err instanceof Error ? err.message : String(err));
+            }
+        }
+        // Background watchdog observer.
+        startEventObserver(pluginCtx, { config, watchdog }, abortController.signal);
+        return async () => {
             console.log("[opencode-advisor] Unloading advisor plugin...");
             abortController.abort();
             clearAllSessionStates();
+            for (const dispose of disposers) {
+                try {
+                    await dispose();
+                }
+                catch {
+                    // best-effort cleanup
+                }
+            }
         };
     },
 });

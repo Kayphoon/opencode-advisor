@@ -194,6 +194,23 @@ Each note carries one of three severities, mapped to a distinct delivery channel
 
 ---
 
+## Two Engines: Watchdog & Consultation
+
+The plugin runs **two complementary engines** (the dual-engine design):
+
+| Engine | Trigger | Direction | Model | Role |
+|---|---|---|---|---|
+| **Watchdog** | Automatic (`session.step.ended` / `execution.succeeded` / `idle`) | **Push** — fires itself | `watchdogModel` | Background per-turn review; verifies and reports flaws. |
+| **Consultation** | The primary agent calls the `consult_advisor` tool | **Pull** — model-driven | `consultModel` | On-demand escalation at decision points. |
+
+### The `consult_advisor` tool
+
+Registered with OpenCode so the primary agent can escalate *before committing to an approach*, *when stuck on a recurring error*, or *before declaring a task done* — mirroring the Claude Code advisor pattern. It receives the question, optional extra context, and the last `includeContextMessages` session messages, then returns concrete guidance. It is **advisory only**; the primary agent decides what to apply.
+
+> Because the watchdog is push-based and the consultation is pull-based, they cover each other's blind spots: the watchdog catches what the agent doesn't realize is wrong; the consultation handles what the agent *knows* it needs help with.
+
+---
+
 ## Model Routing Strategy
 
 The Advisor is deliberately model-agnostic. Two roles are supported:
@@ -201,7 +218,7 @@ The Advisor is deliberately model-agnostic. Two roles are supported:
 | Role | Purpose | Recommended profile | Cadence |
 |---|---|---|---|
 | **Watchdog** | Background per-turn review of incremental deltas | A **reasoning-capable** mid/large model (e.g. `deepseek-flash`, `gemini-3.8-flash`, `kimi-k3`) | Every turn / every Nth turn |
-| **Consult** *(roadmap)* | On-demand escalation the primary agent requests at decision points | The **strongest** available model | Model-driven, rare |
+| **Consult** | On-demand escalation the primary agent requests at decision points | The **strongest** available model | Model-driven, rare |
 
 > **Why not a tiny model for the watchdog?** Because a review window is *not* latency-critical: a primary turn plus human reading time gives the background reviewer **10–30 seconds** of slack. A pure Flash model with no thinking budget will only ever catch trivia ("rename this variable"); a reasoning model that spends a few seconds tracing a call chain catches the crash. The watchdog should be *cheap enough to run often*, but *smart enough to be worth listening to*.
 
@@ -213,20 +230,23 @@ The Advisor is deliberately model-agnostic. Two roles are supported:
 
 | File | Responsibility |
 |---|---|
-| `src/index.ts` | OpenCode V2 plugin entry (`Plugin.define`), lifecycle, and cleanup. |
-| `src/config.ts` | Config loader: merges `~/.config/opencode/advisor.json` + plugin `options`; auto-resolves provider `baseURL`/`apiKey` from `opencode.jsonc`. |
-| `src/state.ts` | Per-session state machine: cursor, circuit-breaker counter, user-turn count, cooldown, FIFO dedupe ring, rolling summary. |
-| `src/trigger.ts` | Event observer: filters sessions/locations, detects turn-end and genuine user input, debounces review scheduling. |
-| `src/transcript.ts` | Delta extraction: goal header + rolling summary + truncated delta + already-raised list; **filters `metadata.advisor` and synthetic parts**. |
-| `src/reviewer.ts` | Reviewer agent loop: multi-step tool dispatch, `maxToolSteps` budget, `advise` capture, bounded tool output. |
-| `src/guard.ts` | Emission guard: normalization, content-free suppression, severity-aware dedupe, per-update quota, cooldown downgrade. |
-| `src/delivery.ts` | Severity routing + **hard circuit breaker** + fail-open error handling. |
+| `src/index.ts` | OpenCode V2 plugin entry (`Plugin.define`), registers the consult tool, lifecycle, and cleanup. |
+| `src/config.ts` | Config loader + dual-model resolution; merges `advisor.json` + plugin `options`; auto-resolves provider `baseURL`/`apiKey`. |
+| `src/llm.ts` | Shared OpenAI-compatible chat-completion caller; never throws on transport errors. |
+| `src/state.ts` | Per-session state machine: cursor, circuit-breaker counter, user-turn count, cooldown, eligible-update counter, dedupe ring, diagnostics. |
+| `src/trigger.ts` | Event observer: filters sessions/locations, captures LSP diagnostics, detects turn-end and genuine user input, debounces + interval-gates reviews. |
+| `src/transcript.ts` | Delta extraction: goal header + deterministic signals + rolling summary + truncated delta; **filters `metadata.advisor` parts**. |
+| `src/enrich.ts` | Deterministic enrichment: working-tree diff stat + LSP diagnostics (zero model tokens). |
+| `src/reviewer.ts` | Watchdog loop: multi-step tool dispatch, `maxToolSteps` budget, `advise` capture, bounded tool output. |
+| `src/guard.ts` | Emission guard: normalization, content-free suppression, **evidence enforcement**, severity-aware dedupe, quota, cooldown downgrade. |
+| `src/delivery.ts` | Severity routing + **hard circuit breaker** + evidence/patch formatting + fail-open errors. |
 | `src/tools/safe-fs.ts` | Workspace containment: blocks directory traversal and symlink escape. |
 | `src/tools/read.ts` | Bounded file reading (line ranges, size caps). |
 | `src/tools/grep.ts` | Bounded regex content search (ignores `node_modules`, `.git`, `dist`, …). |
 | `src/tools/glob.ts` | Bounded filename matching. |
-| `src/tools/advise.ts` | The single emission tool: `note` + `severity`. |
-| `src/test/advisor.test.ts` | Unit tests: path containment, self-review filtering, guard behavior, circuit breaker. |
+| `src/tools/advise.ts` | Emission tool: `note` + `severity` + `evidence` + `suggestedPatch`. |
+| `src/tools/consult.ts` | The intrinsic `consult_advisor` tool. |
+| `src/test/advisor.test.ts` | Unit tests: path containment, self-review filtering, guard, evidence enforcement, circuit breaker. |
 
 ---
 
@@ -245,17 +265,31 @@ If `provider.baseURL` / `provider.apiKey` are omitted, they are auto-resolved fr
 ```json
 {
   "enabled": true,
-  "model": "deepseek/deepseek-flash",
+
+  "watchdogModel": "deepseek/deepseek-flash",
+  "consultModel": "moonshotai/kimi-k3",
+
   "provider": {
     "baseURL": "http://127.0.0.1:8084/v1",
     "apiKey": "your-api-key-here"
   },
+
   "reviewMode": "step",
+  "reviewInterval": 1,
   "maxToolSteps": 3,
   "maxNotesPerUpdate": 3,
   "immuneTurns": 3,
   "timeoutMs": 25000,
+  "requireEvidence": true,
   "tools": ["read", "grep", "glob"],
+
+  "consult": {
+    "enabled": true,
+    "model": "moonshotai/kimi-k3",
+    "maxTokens": 1024,
+    "includeContextMessages": 12
+  },
+
   "delivery": {
     "nit": "synthetic_noreply",
     "concern": "synthetic_noreply",
@@ -269,18 +303,26 @@ If `provider.baseURL` / `provider.apiKey` are omitted, they are auto-resolved fr
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `enabled` | boolean | `true` | Master switch. |
-| `model` | string | `deepseek/deepseek-flash` | `provider/model` for the watchdog. |
+| `watchdogModel` | string | `deepseek/deepseek-flash` | `provider/model` for the background reviewer. |
+| `model` | string | — | Legacy alias for `watchdogModel`. |
+| `consultModel` | string | = watchdog | `provider/model` for on-demand consultations. |
 | `variant` | string | — | Optional model variant/thinking level. |
 | `provider.baseURL` | string | auto-resolved | OpenAI-compatible endpoint. |
 | `provider.apiKey` | string | auto-resolved | Bearer token. |
 | `reviewMode` | `"step"` \| `"idle"` \| `"execution"` | `"step"` | Which event kind triggers a review. |
+| `reviewInterval` | number | `1` | Review every Nth eligible update; skipped deltas are merged into the next review. |
 | `maxToolSteps` | number | `3` | Max tool-call rounds per review. |
 | `maxNotesPerUpdate` | number | `3` | Max notes accepted per review. |
 | `immuneTurns` | number | `3` | Cooldown window after a waking interrupt. |
 | `timeoutMs` | number | `25000` | Hard deadline per review. |
+| `requireEvidence` | boolean | `true` | Downgrade `blocker` → `concern` when unverified. |
 | `tools` | string[] | `["read","grep","glob"]` | Read-only tools granted to the reviewer. |
 | `delivery.*` | enum | see above | Delivery channel per severity. |
 | `systemPrompt` | string | built-in | Reviewer system prompt. |
+| `consult.enabled` | boolean | `true` | Register the `consult_advisor` tool. |
+| `consult.model` | string | = watchdog | Model used for consultations. |
+| `consult.maxTokens` | number | `1024` | Output budget per consultation. |
+| `consult.includeContextMessages` | number | `12` | Recent messages attached to a consultation. |
 
 ---
 
@@ -324,11 +366,14 @@ npm test           # node --test dist/test/advisor.test.js
 
 ### Verification status
 
-The current unit suite covers the four load-bearing safety invariants:
+The unit suite covers the load-bearing safety and quality invariants:
 
 - ✅ **Path containment** — directory traversal and symlink escape are rejected.
 - ✅ **Self-review filtering** — `metadata.advisor` messages are excluded from deltas.
+- ✅ **Deterministic signals** — enrichment is appended to the review context.
 - ✅ **Emission guard** — content-free phrases and duplicates are suppressed.
+- ✅ **Fact-checking enforcement** — a `blocker` without evidence is downgraded to `concern`.
+- ✅ **Evidence rendering** — delivered notes carry `file:line` evidence and suggested patches.
 - ✅ **Circuit breaker** — a second consecutive `blocker` cannot wake the session.
 
 Real-session end-to-end verification (live event stream → reviewer → delivered note) is a **planned** validation gate, not yet automated.
@@ -340,12 +385,13 @@ Real-session end-to-end verification (live event stream → reviewer → deliver
 | Item | Status | Notes |
 |---|---|---|
 | OMP-style extrinsic watchdog | ✅ Implemented | Event-driven, per-turn, read-only tools, circuit breaker. |
-| Fact-checking pipeline (verification-before-report) | 🟡 Partial | Reviewer has `read`/`grep`; explicit citation-required `advise` schema is planned. |
-| Intrinsic `consult_advisor` tool | ⬜ Planned | Let the primary agent request a stronger-model consultation (Claude Code pattern). |
-| Dual-model routing (`watchdogModel` / `consultModel`) | ⬜ Planned | Cheap+smart watchdog; strongest model for on-demand consults. |
-| Deterministic enrichment (LSP diagnostics, diff stats) | ⬜ Planned | Zero-token, hallucination-proof review context. |
-| Actionable patches (`suggestedPatch`) | ⬜ Planned | Attach a ready-to-apply diff to `concern`/`blocker` notes. |
+| Fact-checking pipeline (verification-before-report) | ✅ Implemented | `advise` carries `evidence {file,line,observedFact}`; unverified `blocker` is downgraded to `concern`. |
+| Intrinsic `consult_advisor` tool | ✅ Implemented | Primary agent can escalate hard decisions to a stronger model. |
+| Dual-model routing (`watchdogModel` / `consultModel`) | ✅ Implemented | Independent provider/model resolution per role. |
+| Deterministic enrichment (VCS diff stat, LSP diagnostics) | ✅ Implemented | Injected into review context; no model tokens spent. |
+| Actionable patches (`suggestedPatch`) | ✅ Implemented | Attached to and rendered with `concern`/`blocker` notes. |
 | Multi-advisor roster (specialized reviewers) | ⬜ Planned | Security / architecture / QA reviewers running in parallel. |
+| Real-session end-to-end test harness | ⬜ Planned | Live event stream → reviewer → delivered note. |
 
 ---
 

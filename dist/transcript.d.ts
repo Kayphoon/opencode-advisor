@@ -13,7 +13,7 @@ export interface RawMessage {
     }>;
 }
 export declare function truncateToolOutput(text: string, headLines?: number, tailLines?: number): string;
-export declare function extractSessionDelta(allMessages: RawMessage[], lastEvaluatedID: string | null, rollingSummary: string, recentNotes: string[]): {
+export declare function extractSessionDelta(allMessages: RawMessage[], lastEvaluatedID: string | null, rollingSummary: string, recentNotes: string[], extraSignals?: string): {
     deltaText: string;
     newLastID: string | null;
     hasMeaningfulWork: boolean;

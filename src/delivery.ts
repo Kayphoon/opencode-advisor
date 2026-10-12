@@ -1,4 +1,4 @@
-import type { AdviceNote, AdvisorConfig, AdvisorSessionState } from "./types.js";
+import type { AdviceNote, AdvisorConfig, AdvisorSessionState, SessionMessageLike } from "./types.js";
 
 export interface SessionClientLike {
   session: {
@@ -19,6 +19,19 @@ export interface SessionClientLike {
   };
 }
 
+/** Render one note, including verified evidence and any suggested patch. */
+export function formatNote(item: AdviceNote): string {
+  let text = `[advisor:${item.severity}] ${item.note}`;
+  if (item.evidence) {
+    const loc = item.evidence.line ? `${item.evidence.file}:${item.evidence.line}` : item.evidence.file;
+    text += `\n  evidence: ${loc} — ${item.evidence.observedFact}`;
+  }
+  if (item.suggestedPatch) {
+    text += `\n  suggested fix:\n${item.suggestedPatch}`;
+  }
+  return text;
+}
+
 export async function deliverNotes(
   notes: AdviceNote[],
   sessionID: string,
@@ -27,16 +40,17 @@ export async function deliverNotes(
   client: SessionClientLike
 ): Promise<void> {
   for (const item of notes) {
-    const formattedText = `[advisor:${item.severity}] ${item.note}`;
+    const formattedText = formatNote(item);
 
     if (item.severity === "blocker") {
-      // 1. HARD CIRCUIT BREAKER
-      // If advisor already woke the session once in this user turn, MUST NOT wake again
+      // HARD CIRCUIT BREAKER: at most one waking interrupt per user turn.
       if (state.consecutiveAdvisorTurns >= 1) {
-        console.warn(`[advisor] Circuit breaker tripped for session ${sessionID}. Degrading blocker to non-waking synthetic.`);
+        console.warn(
+          `[advisor] Circuit breaker tripped for session ${sessionID}. Degrading blocker to non-waking synthetic.`
+        );
         await client.session.synthetic({
           sessionID,
-          text: `${formattedText} (Notice: auto-wake suppressed by circuit breaker until next user message)`,
+          text: `${formattedText}\n  (auto-wake suppressed by circuit breaker until the next user message)`,
           metadata: { advisor: true, severity: "blocker", degraded: true },
           resume: false,
           delivery: "queue",
@@ -44,7 +58,6 @@ export async function deliverNotes(
         continue;
       }
 
-      // Waking steer delivery
       try {
         await client.session.prompt({
           sessionID,
@@ -53,15 +66,13 @@ export async function deliverNotes(
           delivery: "steer",
           resume: true,
         });
-
         state.consecutiveAdvisorTurns += 1;
-        state.immuneUntilUserTurn = state.userTurnCount + (config.immuneTurns || 3);
+        state.immuneUntilUserTurn = state.userTurnCount + (config.immuneTurns ?? 3);
         console.log(`[advisor] Waking blocker delivered to ${sessionID}.`);
       } catch (err: unknown) {
         console.error(`[advisor] Failed to deliver waking prompt:`, err);
       }
     } else {
-      // 2. Non-waking synthetic delivery (nit & concern)
       try {
         await client.session.synthetic({
           sessionID,
@@ -77,3 +88,5 @@ export async function deliverNotes(
     }
   }
 }
+
+export type { SessionMessageLike };

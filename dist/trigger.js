@@ -1,15 +1,51 @@
-import { getOrCreateSessionState, resetConsecutiveAdvisorTurns } from "./state.js";
+import { getOrCreateSessionState, resetConsecutiveAdvisorTurns, recordDiagnostics } from "./state.js";
 import { extractSessionDelta } from "./transcript.js";
 import { runReviewerAgent } from "./reviewer.js";
 import { filterAndGuardNotes } from "./guard.js";
 import { deliverNotes } from "./delivery.js";
-export function startEventObserver(ctx, config, rootSignal) {
+import { collectDeterministicSignals } from "./enrich.js";
+function isDiagnosticEvent(type) {
+    return type.toLowerCase().includes("diagnostic");
+}
+function extractDiagnostics(event) {
+    const data = event.data ?? {};
+    const list = [];
+    const push = (value) => {
+        if (typeof value === "string" && value.trim()) {
+            list.push(value.trim());
+            return;
+        }
+        if (value && typeof value === "object") {
+            const obj = value;
+            const file = typeof obj["file"] === "string" ? obj["file"] : typeof obj["uri"] === "string" ? obj["uri"] : "";
+            const message = typeof obj["message"] === "string"
+                ? obj["message"]
+                : typeof obj["text"] === "string"
+                    ? obj["text"]
+                    : "";
+            const line = typeof obj["line"] === "number" ? obj["line"] : undefined;
+            if (message) {
+                list.push(`${file}${line !== undefined ? `:${line}` : ""} ${message}`.trim());
+            }
+        }
+    };
+    for (const key of ["diagnostics", "items", "errors", "problems"]) {
+        const value = data[key];
+        if (Array.isArray(value))
+            value.forEach(push);
+    }
+    if (typeof data["diagnostic"] === "string")
+        push(data["diagnostic"]);
+    return list;
+}
+export function startEventObserver(ctx, deps, rootSignal) {
+    const { config, watchdog } = deps;
+    const reviewInterval = Math.max(1, config.reviewInterval ?? 1);
     const debounceTimers = new Map();
     async function scheduleReview(sessionID, workspaceDir) {
         const state = getOrCreateSessionState(sessionID, workspaceDir);
         if (state.isReviewing)
             return;
-        // Clear existing timer
         const existing = debounceTimers.get(sessionID);
         if (existing)
             clearTimeout(existing);
@@ -17,29 +53,31 @@ export function startEventObserver(ctx, config, rootSignal) {
             debounceTimers.delete(sessionID);
             if (rootSignal.aborted || state.isReviewing)
                 return;
+            // reviewInterval: review every Nth eligible update. Skipped deltas are held
+            // (the cursor is not advanced) and merged into the next review.
+            state.eligibleUpdates += 1;
+            if (state.eligibleUpdates % reviewInterval !== 0)
+                return;
             state.isReviewing = true;
             const reviewAbort = new AbortController();
             state.abortController = reviewAbort;
-            const timeout = setTimeout(() => {
-                reviewAbort.abort();
-            }, config.timeoutMs || 25000);
+            const timeout = setTimeout(() => reviewAbort.abort(), watchdog.timeoutMs);
             try {
-                // 1. Fetch messages
                 const messages = await ctx.session.context({ sessionID });
                 if (!messages || messages.length === 0)
                     return;
-                // 2. Extract delta
-                const { deltaText, newLastID, hasMeaningfulWork } = extractSessionDelta(messages, state.lastEvaluatedMessageID, state.rollingSummary, state.seenHashes);
+                const signals = await collectDeterministicSignals(ctx, state, reviewAbort.signal);
+                const { deltaText, newLastID, hasMeaningfulWork } = extractSessionDelta(messages, state.lastEvaluatedMessageID, state.rollingSummary, state.seenHashes, signals);
                 if (!hasMeaningfulWork || !deltaText.trim()) {
                     state.lastEvaluatedMessageID = newLastID;
                     return;
                 }
                 console.log(`[advisor] Reviewing delta for session ${sessionID} (${deltaText.length} chars)...`);
-                // 3. Run Reviewer Agent
-                const rawNotes = await runReviewerAgent(deltaText, workspaceDir || ctx.location.directory, config, reviewAbort.signal);
-                // 4. Guard & Deduplicate
-                const guardedNotes = filterAndGuardNotes(rawNotes, state, config.maxNotesPerUpdate || 3);
-                // 5. Deliver
+                const rawNotes = await runReviewerAgent(deltaText, workspaceDir || ctx.location.directory, watchdog, config.requireEvidence !== false, reviewAbort.signal);
+                const guardedNotes = filterAndGuardNotes(rawNotes, state, {
+                    maxNotes: config.maxNotesPerUpdate ?? 3,
+                    requireEvidence: config.requireEvidence !== false,
+                });
                 if (guardedNotes.length > 0) {
                     console.log(`[advisor] Delivering ${guardedNotes.length} notes to session ${sessionID}.`);
                     await deliverNotes(guardedNotes, sessionID, state, config, ctx);
@@ -64,17 +102,19 @@ export function startEventObserver(ctx, config, rootSignal) {
             for await (const event of ctx.event.subscribe({ signal: rootSignal })) {
                 if (rootSignal.aborted)
                     break;
-                const sessionID = event.data?.["sessionID"] ||
-                    event.data?.["id"] ||
-                    "";
+                const sessionID = event.data?.["sessionID"] || event.data?.["id"] || "";
                 if (!sessionID || !sessionID.startsWith("ses"))
                     continue;
-                // Check workspace directory match
                 const eventDir = event.location?.directory || ctx.location.directory;
-                if (ctx.location.directory && eventDir !== ctx.location.directory) {
+                if (ctx.location.directory && eventDir !== ctx.location.directory)
                     continue;
+                // Deterministic signals: capture LSP diagnostics as they stream.
+                if (isDiagnosticEvent(event.type)) {
+                    const diagnostics = extractDiagnostics(event);
+                    if (diagnostics.length > 0)
+                        recordDiagnostics(sessionID, diagnostics);
                 }
-                // 1. If genuine user input admitted, reset consecutive advisor turns counter
+                // Genuine user input resets the circuit breaker.
                 if (event.type === "session.inbox.enqueued" ||
                     event.type === "session.prompt" ||
                     event.type === "session.message.content.updated") {
@@ -83,7 +123,7 @@ export function startEventObserver(ctx, config, rootSignal) {
                         resetConsecutiveAdvisorTurns(sessionID);
                     }
                 }
-                // 2. Turn completion triggers
+                // Turn completion triggers a (debounced, interval-gated) review.
                 if (event.type === "session.step.ended" ||
                     event.type === "session.execution.succeeded" ||
                     event.type === "session.idle") {

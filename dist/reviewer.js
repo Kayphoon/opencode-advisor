@@ -2,22 +2,29 @@ import { readTool } from "./tools/read.js";
 import { grepTool } from "./tools/grep.js";
 import { globTool } from "./tools/glob.js";
 import { createAdviseTool } from "./tools/advise.js";
-export async function runReviewerAgent(transcriptDelta, workspaceDir, config, signal) {
+import { callChatCompletion, normalizeBaseURL } from "./llm.js";
+import { DEFAULT_BASE_URL } from "./config.js";
+const TOOL_REGISTRY = {
+    read: readTool,
+    grep: grepTool,
+    glob: globTool,
+};
+/**
+ * Run one reviewer pass: an independent, tool-using model loop over the delta.
+ * Emits at most one batch of `advise` notes; terminates as soon as advise fires.
+ */
+export async function runReviewerAgent(transcriptDelta, workspaceDir, watchdog, requireEvidence, signal) {
     const collectedNotes = [];
-    const adviseTool = createAdviseTool(collectedNotes);
+    const adviseTool = createAdviseTool(collectedNotes, requireEvidence);
     const activeTools = [adviseTool];
-    const allowedToolNames = new Set(config.tools || ["read", "grep", "glob"]);
-    if (allowedToolNames.has("read"))
-        activeTools.push(readTool);
-    if (allowedToolNames.has("grep"))
-        activeTools.push(grepTool);
-    if (allowedToolNames.has("glob"))
-        activeTools.push(globTool);
-    const toolMap = new Map();
-    for (const t of activeTools) {
-        toolMap.set(t.name, t);
+    for (const name of watchdog.tools) {
+        const tool = TOOL_REGISTRY[name];
+        if (tool)
+            activeTools.push(tool);
     }
-    // Format tools for OpenAI Chat Completions
+    const toolMap = new Map();
+    for (const t of activeTools)
+        toolMap.set(t.name, t);
     const openAiTools = activeTools.map((t) => ({
         type: "function",
         function: {
@@ -26,85 +33,48 @@ export async function runReviewerAgent(transcriptDelta, workspaceDir, config, si
             parameters: t.parameters,
         },
     }));
-    const baseURL = (config.provider?.baseURL || "http://127.0.0.1:8084/v1").replace(/\/+$/, "");
-    const apiKey = config.provider?.apiKey || "default-key";
-    const modelName = config.model.includes("/") ? config.model.split("/")[1] : config.model;
+    const baseURL = normalizeBaseURL(watchdog.provider, DEFAULT_BASE_URL);
+    const apiKey = watchdog.provider.apiKey || "default-key";
     const messages = [
-        {
-            role: "system",
-            content: config.systemPrompt || "You are an autonomous Watchdog Advisor. Review code and submit advice via advise tool.",
-        },
-        {
-            role: "user",
-            content: transcriptDelta,
-        },
+        { role: "system", content: watchdog.systemPrompt },
+        { role: "user", content: transcriptDelta },
     ];
-    const maxSteps = Math.min(5, Math.max(1, config.maxToolSteps || 3));
-    for (let step = 0; step < maxSteps; step++) {
+    for (let step = 0; step < watchdog.maxToolSteps; step++) {
         if (signal.aborted)
             break;
-        const payload = {
-            model: modelName,
+        const { message, error } = await callChatCompletion({
+            baseURL,
+            apiKey,
+            modelName: watchdog.modelName,
             messages,
             tools: openAiTools,
-            tool_choice: "auto",
-            temperature: 0.1,
-            max_tokens: 768,
-        };
-        let response;
-        try {
-            response = await fetch(`${baseURL}/chat/completions`, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    Authorization: `Bearer ${apiKey}`,
-                },
-                body: JSON.stringify(payload),
-                signal,
-            });
-        }
-        catch (err) {
-            console.warn("[advisor] fetch error:", err instanceof Error ? err.message : String(err));
+            temperature: watchdog.temperature,
+            maxTokens: watchdog.maxTokens,
+            signal,
+        });
+        if (error) {
+            console.warn(`[advisor] watchdog model error: ${error}`);
             break;
         }
-        if (!response.ok) {
-            const errText = await response.text().catch(() => "");
-            console.warn(`[advisor] HTTP error ${response.status}: ${errText.slice(0, 200)}`);
+        if (!message)
             break;
-        }
-        let json;
-        try {
-            json = await response.json();
-        }
-        catch {
+        messages.push(message);
+        if (!message.tool_calls || message.tool_calls.length === 0)
             break;
-        }
-        const choice = json?.choices?.[0];
-        const assistantMsg = choice?.message;
-        if (!assistantMsg)
-            break;
-        messages.push(assistantMsg);
-        // If no tool calls, model concluded its thoughts
-        if (!assistantMsg.tool_calls || assistantMsg.tool_calls.length === 0) {
-            break;
-        }
         let hasAdviseCall = false;
-        // Execute each tool call
-        for (const toolCall of assistantMsg.tool_calls) {
+        for (const toolCall of message.tool_calls) {
             const fnName = toolCall.function?.name;
-            const fnArgsRaw = toolCall.function?.arguments || "{}";
             let parsedArgs = {};
             try {
-                parsedArgs = JSON.parse(fnArgsRaw);
+                parsedArgs = JSON.parse(toolCall.function?.arguments || "{}");
             }
             catch {
                 parsedArgs = {};
             }
-            if (fnName === "advise") {
+            if (fnName === "advise")
                 hasAdviseCall = true;
-            }
             const toolDef = toolMap.get(fnName);
-            let toolOutput = "";
+            let toolOutput;
             if (toolDef) {
                 try {
                     toolOutput = await toolDef.execute(parsedArgs, { workspaceDir, signal });
@@ -120,13 +90,12 @@ export async function runReviewerAgent(transcriptDelta, workspaceDir, config, si
                 role: "tool",
                 tool_call_id: toolCall.id,
                 name: fnName,
-                content: toolOutput.slice(0, 4000), // Bounded tool output
+                content: toolOutput.slice(0, 4000),
             });
         }
-        // In OMP watchdog, after emitting advise, review terminates
-        if (hasAdviseCall) {
+        // After the reviewer emits advice, its job is done for this turn.
+        if (hasAdviseCall)
             break;
-        }
     }
     return collectedNotes;
 }

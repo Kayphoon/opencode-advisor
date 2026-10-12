@@ -1,29 +1,34 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import type { AdvisorConfig } from "./types.js";
+import type { AdvisorConfig, AdvisorProviderConfig, ResolvedModelConfig } from "./types.js";
+import { resolveModelName } from "./llm.js";
 
-const DEFAULT_CONFIG: Required<Omit<AdvisorConfig, "variant">> = {
-  enabled: true,
-  model: "deepseek/deepseek-flash",
-  provider: {},
-  reviewMode: "step",
-  maxToolSteps: 3,
-  maxNotesPerUpdate: 3,
-  immuneTurns: 3,
-  timeoutMs: 25000,
-  tools: ["read", "grep", "glob"],
-  delivery: {
-    nit: "synthetic_noreply",
-    concern: "synthetic_noreply",
-    blocker: "steer_waking",
-  },
-  systemPrompt: `You are an autonomous Watchdog Advisor reviewing an ongoing OpenCode programming session.
+const DEFAULT_WATCHDOG_MODEL = "deepseek/deepseek-flash";
+const DEFAULT_BASE_URL = "http://127.0.0.1:8084/v1";
+
+export const WATCHDOG_SYSTEM_PROMPT = `You are an autonomous Watchdog Advisor reviewing an ongoing OpenCode programming session.
 Your role is strictly to detect architecture flaws, bugs, security vulnerabilities, and violations of user constraints.
-Before raising an issue, use read/grep/glob to verify the actual codebase facts.
-When you identify an issue, invoke the advise tool with a concise, actionable note and severity (nit, concern, blocker).
-If everything looks good or there is nothing important to say, do NOT call advise.`,
-};
+
+FACT-CHECKING IS MANDATORY (whoever asserts must prove):
+- Never raise an issue from the diff alone. Before advising, use the read/grep/glob tools to inspect the ACTUAL code.
+- If you suspect a null dereference, missing validation, or wrong signature, READ the callee and its call sites to confirm.
+- If your suspicion is refuted by the real code, stay silent. Do not report it.
+
+When you find a real, verified issue, call the advise tool with:
+- note: one concise, actionable sentence
+- severity: nit | concern | blocker
+- evidence: { file, line?, observedFact } — required for concern/blocker; cite what you actually read
+- suggestedPatch: optional, a minimal fix sketch
+
+If everything looks correct or there is nothing important to say, do NOT call advise.`;
+
+export const CONSULT_SYSTEM_PROMPT = `You are a senior technical advisor consulted by a coding agent at a decision point.
+You receive the agent's question plus recent session context.
+Give a decisive, concrete recommendation: the recommended path, the key trade-off, and the immediate next step.
+Be brief. Prefer specific file/API/approach guidance over generic advice.
+If the question is unanswerable without more information, say exactly what is missing.
+Do not restate the question. Do not use filler.`;
 
 function tryReadJson(filePath: string): Record<string, unknown> | null {
   try {
@@ -37,7 +42,7 @@ function tryReadJson(filePath: string): Record<string, unknown> | null {
   }
 }
 
-function resolveProviderFromGlobalOpencode(modelSlug: string): { baseURL?: string; apiKey?: string } {
+function resolveProviderFromGlobalOpencode(modelSlug: string): AdvisorProviderConfig {
   const home = homedir();
   const candidates = [
     join(home, ".config", "opencode", "opencode.jsonc"),
@@ -67,25 +72,81 @@ function resolveProviderFromGlobalOpencode(modelSlug: string): { baseURL?: strin
   return {};
 }
 
+function mergeProvider(
+  explicit: AdvisorProviderConfig | undefined,
+  modelSlug: string
+): AdvisorProviderConfig {
+  const auto = resolveProviderFromGlobalOpencode(modelSlug);
+  return {
+    baseURL: explicit?.baseURL || auto.baseURL,
+    apiKey: explicit?.apiKey || auto.apiKey,
+  };
+}
+
+/** Load and merge plugin options over the on-disk advisor config over defaults. */
 export function loadAdvisorConfig(options?: Record<string, unknown>): AdvisorConfig {
   const home = homedir();
   const advisorJsonPath = join(home, ".config", "opencode", "advisor.json");
   const fileConfig = (tryReadJson(advisorJsonPath) || {}) as Partial<AdvisorConfig>;
 
-  const merged: AdvisorConfig = {
-    ...DEFAULT_CONFIG,
+  return {
+    enabled: true,
+    reviewMode: "step",
+    reviewInterval: 1,
+    maxToolSteps: 3,
+    maxNotesPerUpdate: 3,
+    immuneTurns: 3,
+    timeoutMs: 25000,
+    tools: ["read", "grep", "glob"],
+    requireEvidence: true,
+    delivery: {
+      nit: "synthetic_noreply",
+      concern: "synthetic_noreply",
+      blocker: "steer_waking",
+    },
     ...fileConfig,
     ...(options as Partial<AdvisorConfig>),
   };
-
-  // If provider credentials are empty, auto-resolve from ~/.config/opencode/opencode.jsonc
-  if (!merged.provider?.baseURL || !merged.provider?.apiKey) {
-    const autoResolved = resolveProviderFromGlobalOpencode(merged.model);
-    merged.provider = {
-      baseURL: merged.provider?.baseURL || autoResolved.baseURL,
-      apiKey: merged.provider?.apiKey || autoResolved.apiKey,
-    };
-  }
-
-  return merged;
 }
+
+/** Resolve the background watchdog model. */
+export function resolveWatchdog(config: AdvisorConfig): ResolvedModelConfig {
+  const model = config.watchdogModel || config.model || DEFAULT_WATCHDOG_MODEL;
+  return {
+    role: "watchdog",
+    model,
+    modelName: resolveModelName(model),
+    provider: mergeProvider(config.provider, model),
+    systemPrompt: config.systemPrompt || WATCHDOG_SYSTEM_PROMPT,
+    maxToolSteps: Math.min(5, Math.max(1, config.maxToolSteps ?? 3)),
+    timeoutMs: config.timeoutMs ?? 25000,
+    tools: config.tools ?? ["read", "grep", "glob"],
+    maxTokens: 768,
+    temperature: 0.1,
+  };
+}
+
+/** Resolve the intrinsic consultation model (falls back to the watchdog model). */
+export function resolveConsult(config: AdvisorConfig): ResolvedModelConfig {
+  const watchdogModel = config.watchdogModel || config.model || DEFAULT_WATCHDOG_MODEL;
+  const consult = config.consult ?? {};
+  const model = consult.model || watchdogModel;
+  return {
+    role: "consult",
+    model,
+    modelName: resolveModelName(model),
+    provider: mergeProvider(consult.provider || config.provider, model),
+    systemPrompt: consult.systemPrompt || CONSULT_SYSTEM_PROMPT,
+    maxToolSteps: 0,
+    timeoutMs: config.timeoutMs ?? 25000,
+    tools: [],
+    maxTokens: consult.maxTokens ?? 1024,
+    temperature: 0.2,
+  };
+}
+
+export function isConsultEnabled(config: AdvisorConfig): boolean {
+  return config.consult?.enabled !== false && config.enabled !== false;
+}
+
+export { DEFAULT_BASE_URL };
