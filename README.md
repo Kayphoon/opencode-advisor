@@ -1,7 +1,8 @@
-# opencode-advisor
+# opencode-superadvisor
 
-> **A background Watchdog Advisor for OpenCode V2** — an independent reviewer model that observes each primary turn, verifies facts against the real codebase, and injects severity-ranked advice (`nit` / `concern` / `blocker`) back into the session with **mathematical anti-loop guarantees**.
+> **A dual-engine advisor for OpenCode V2** — an OMP-style background **watchdog** that observes each primary turn, verifies facts against the real codebase, and injects severity-ranked advice (`nit` / `concern` / `blocker`) with **mathematical anti-loop guarantees**; plus an on-demand **`consult_advisor`** tool that lets the primary agent escalate hard decisions to a stronger model.
 
+[![npm](https://img.shields.io/npm/v/opencode-superadvisor)](https://www.npmjs.com/package/opencode-superadvisor)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![OpenCode](https://img.shields.io/badge/OpenCode-V2.0%2B-black)](https://opencode.ai/v2/docs/)
 
@@ -328,74 +329,89 @@ If `provider.baseURL` / `provider.apiKey` are omitted, they are auto-resolved fr
 
 ## Installation
 
-### 1. Build
+### From npm (recommended)
 
 ```bash
-npm install
-npm run build
+opencode plugin add opencode-superadvisor
 ```
 
-### 2. Register with OpenCode
-
-Add the plugin to your global `~/.config/opencode/opencode.jsonc` (or a project config):
+Or add it to `~/.config/opencode/opencode.jsonc` (global) or a project config:
 
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    "oh-my-opencode-slim@latest",
-    "github:Kayphoon/opencode-advisor"
+    "opencode-superadvisor"
   ]
 }
 ```
 
 > **Note:** depending on your OpenCode build, the config key may be `plugin` (observed working on v2.0.19) or `plugins`. Match whatever key your existing plugin entries already use.
 
-Then restart the background service:
+Then restart the background service and verify:
 
 ```bash
 opencode service restart
+opencode api get /api/plugin
+# → { "id": "opencode-superadvisor", "source": { "type": "package" }, "state": { "status": "active" } }
 ```
 
-Verify it loaded:
+### From a local checkout
 
 ```bash
-opencode api get /api/plugin
-# → { "id": "opencode-advisor", "source": { "type": "package", "target": "github:Kayphoon/opencode-advisor" }, "state": { "status": "active" } }
+git clone https://github.com/Kayphoon/opencode-advisor.git
+cd opencode-advisor && npm install && npm run build
 ```
 
-#### ⚠️ Known install caveat (OpenCode CLI bug)
+```jsonc
+{ "plugin": ["/absolute/path/to/opencode-advisor"] }
+```
 
-On some OpenCode builds, `opencode plugin add github:...` fails with:
+### From GitHub (⚠️ see the caveat below)
+
+```bash
+opencode plugin add github:Kayphoon/opencode-advisor
+```
+
+> Prefer npm or a local path. Git-based installs currently hit a bug in some OpenCode builds.
+
+### ⚠️ Known OpenCode CLI bug: git dependencies
+
+On some OpenCode builds (observed on **2.0.19**, a Bun-compiled binary), installing **any** `github:` / `git+https://` plugin fails with:
 
 ```
 NpmInstallFailedError (cause: Error: git dep preparation failed)
 ```
 
-even though a plain `npm install github:Kayphoon/opencode-advisor` of the same repository succeeds. This is a bug in the CLI's bundled package installer's git-dependency preparation, not in this package.
+**Root cause (confirmed from `~/.local/share/opencode/log/opencode.log`):** for a git dependency, npm's `pacote` clones the repo and runs an inner `npm install`. OpenCode spawns that inner install as:
 
-**Workaround** — populate OpenCode's package cache directly:
+```
+/$bunfs/bin/npm-cli.js install --force --cache=/root/.npm --no-save --include=dev ...
+```
+
+`/$bunfs/` is Bun's **internal virtual filesystem** inside the single-file binary. In this build the spawn resolves to the OpenCode CLI itself, so it parses `install --force …` as OpenCode arguments, prints help, and exits non-zero:
+
+```
+cli starting version=2.0.19 args=["/$bunfs/bin/npm-cli.js","install","--force",...]
+cli process failed cause="~effect/cli/CliError/ShowHelp: Help requested"
+```
+
+Registry packages (e.g. `oh-my-opencode-slim@latest`) skip this path entirely, which is why only git installs fail. This is an OpenCode packaging bug, not a problem with this package.
+
+**Workarounds:** install from npm (recommended), use a local checkout path, or populate OpenCode's cache manually:
 
 ```bash
 SLUG="$HOME/.cache/opencode/npm/git-opencode-advisor-39a33a901f74/$(date +%s%3N)"
 mkdir -p "$SLUG"
-printf '{"dependencies":{"opencode-advisor":"github:Kayphoon/opencode-advisor"}}\n' > "$SLUG/package.json"
+printf '{"dependencies":{"opencode-superadvisor":"github:Kayphoon/opencode-advisor"}}\n' > "$SLUG/package.json"
 ( cd "$SLUG" && npm install --no-audit --no-fund )
 ```
 
-Then add the `github:...` entry to your config and run `opencode service restart`.
-
-**Alternative (no cache hack):** point the config at a local checkout instead — OpenCode resolves local plugin paths directly:
-
-```jsonc
-{ "plugin": ["/path/to/opencode-advisor"] }
-```
-
-### 3. (Optional) Dedicated config
+### (Optional) Dedicated config
 
 Create `~/.config/opencode/advisor.json` (see [Configuration](#configuration)). Credentials are inherited automatically from `opencode.jsonc` when omitted.
 
-### 4. Or: let an AI agent install it
+### Or: let an AI agent install it
 
 Copy the prompt below into any coding agent that has shell access on the target machine. It handles the config edit, the CLI workaround, and verification.
 
@@ -403,37 +419,30 @@ Copy the prompt below into any coding agent that has shell access on the target 
 <summary><b>Install prompt (English)</b></summary>
 
 ```text
-Install and enable the OpenCode plugin "opencode-advisor" on this machine.
+Install and enable the OpenCode plugin "opencode-superadvisor" on this machine.
 
 Context:
-- It is an OpenCode V2 plugin. Source: https://github.com/Kayphoon/opencode-advisor
-- KNOWN BUG: `opencode plugin add github:...` can fail with
-  "NpmInstallFailedError (cause: Error: git dep preparation failed)" even though a
-  plain `npm install github:...` works. Do NOT retry the CLI repeatedly — use the
-  cache workaround in step 3.
+- OpenCode V2 plugin. npm package: opencode-superadvisor. Source: https://github.com/Kayphoon/opencode-advisor
+- Prefer the npm registry path. Do NOT use `github:` — on some OpenCode builds git installs
+  fail with "NpmInstallFailedError (cause: Error: git dep preparation failed)" (a CLI packaging bug).
 
 Steps:
 1. Locate the global config at ~/.config/opencode/opencode.jsonc (create it if missing).
    BACK IT UP first (e.g. copy to opencode.jsonc.bak). Preserve all existing settings.
-2. Add "github:Kayphoon/opencode-advisor" to the plugin array.
+2. Add "opencode-superadvisor" to the plugin array.
    - Match the key already present in the file: `plugin` or `plugins`. If neither exists, use `plugin`.
    - If the array already contains other plugins, append; do not replace.
-3. Work around the CLI bug by populating OpenCode's package cache directly:
-     ls -d ~/.cache/opencode/npm/git-opencode-advisor-* 2>/dev/null   # find the slug dir
-     SLUG="$HOME/.cache/opencode/npm/git-opencode-advisor-<HASH>/$(date +%s%3N)"
-     mkdir -p "$SLUG"
-     printf '{"dependencies":{"opencode-advisor":"github:Kayphoon/opencode-advisor"}}\n' > "$SLUG/package.json"
-     ( cd "$SLUG" && npm install --no-audit --no-fund )
-   If no git-opencode-advisor-* directory exists yet, run
-   `opencode plugin add github:Kayphoon/opencode-advisor` once to create it, ignore its error,
-   then run the block above.
+3. Install it:  opencode plugin add opencode-superadvisor
+   If that command is unavailable, the config entry from step 2 is enough — OpenCode installs it on startup.
 4. Restart the service:  opencode service restart
 5. Verify:  opencode api get /api/plugin
-   Expect an entry: { "id": "opencode-advisor", "source": { "type": "package",
-   "target": "github:Kayphoon/opencode-advisor" }, "state": { "status": "active" } }
+   Expect an entry: { "id": "opencode-superadvisor", "state": { "status": "active" } }
 6. (Optional) To use a stronger consultation model, create ~/.config/opencode/advisor.json
    with { "watchdogModel": "deepseek/deepseek-flash", "consultModel": "<stronger-model-id>" }.
    If omitted, provider baseURL/apiKey are auto-resolved from opencode.jsonc.
+
+Fallback if npm is unavailable: clone https://github.com/Kayphoon/opencode-advisor,
+run `npm install && npm run build`, and set the plugin entry to the absolute local path.
 
 Constraints:
 - Never delete or overwrite unrelated plugin/config entries.
@@ -446,36 +455,30 @@ Constraints:
 <summary><b>安装提示词（中文）</b></summary>
 
 ```text
-请在这台机器上安装并启用 OpenCode 插件 opencode-advisor。
+请在这台机器上安装并启用 OpenCode 插件 opencode-superadvisor。
 
 背景：
-- 这是一个 OpenCode V2 插件，源码：https://github.com/Kayphoon/opencode-advisor
-- 已知 BUG：`opencode plugin add github:...` 会报
-  "NpmInstallFailedError (cause: Error: git dep preparation failed)"，
-  但直接用 `npm install github:...` 是正常的。不要反复重试 CLI，请使用第 3 步的缓存绕过方案。
+- OpenCode V2 插件。npm 包名：opencode-superadvisor；源码：https://github.com/Kayphoon/opencode-advisor
+- 请优先走 npm 注册表安装，不要用 `github:` —— 某些 OpenCode 版本安装 git 依赖会报
+  "NpmInstallFailedError (cause: Error: git dep preparation failed)"（CLI 打包器的 bug）。
 
 步骤：
 1. 找到全局配置 ~/.config/opencode/opencode.jsonc（不存在则创建）。
    先备份（例如复制为 opencode.jsonc.bak），并完整保留其他已有配置。
-2. 在插件数组中加入 "github:Kayphoon/opencode-advisor"。
+2. 在插件数组中加入 "opencode-superadvisor"。
    - 匹配文件中已存在的键名：`plugin` 或 `plugins`；若都不存在则用 `plugin`。
    - 若数组里已有其他插件，请追加，不要覆盖。
-3. 绕过 CLI BUG，直接填充 OpenCode 的插件缓存：
-     ls -d ~/.cache/opencode/npm/git-opencode-advisor-* 2>/dev/null   # 找到 slug 目录
-     SLUG="$HOME/.cache/opencode/npm/git-opencode-advisor-<HASH>/$(date +%s%3N)"
-     mkdir -p "$SLUG"
-     printf '{"dependencies":{"opencode-advisor":"github:Kayphoon/opencode-advisor"}}\n' > "$SLUG/package.json"
-     ( cd "$SLUG" && npm install --no-audit --no-fund )
-   若还没有 git-opencode-advisor-* 目录，先执行一次
-   `opencode plugin add github:Kayphoon/opencode-advisor` 生成目录（忽略它的报错），
-   再执行上面的命令块。
+3. 安装：opencode plugin add opencode-superadvisor
+   若该命令不可用，第 2 步写入的配置项本身也够用 —— OpenCode 会在启动时自动安装。
 4. 重启服务：opencode service restart
 5. 验证：opencode api get /api/plugin
-   应出现：{ "id": "opencode-advisor", "source": { "type": "package",
-   "target": "github:Kayphoon/opencode-advisor" }, "state": { "status": "active" } }
+   应出现：{ "id": "opencode-superadvisor", "state": { "status": "active" } }
 6. （可选）若想用更强的顾问模型，创建 ~/.config/opencode/advisor.json，
    内容如 { "watchdogModel": "deepseek/deepseek-flash", "consultModel": "<更强的模型ID>" }。
    不创建时会自动继承 opencode.jsonc 中对应 provider 的 baseURL 与 apiKey。
+
+若 npm 不可用：克隆 https://github.com/Kayphoon/opencode-advisor，
+执行 `npm install && npm run build`，再把插件项指向本地绝对路径。
 
 约束：
 - 绝对不要删除或覆盖无关的插件与配置项。

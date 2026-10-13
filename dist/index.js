@@ -4,16 +4,16 @@ import { startEventObserver } from "./trigger.js";
 import { clearAllSessionStates } from "./state.js";
 import { createConsultTool } from "./tools/consult.js";
 export const AdvisorPlugin = Plugin.define({
-    id: "opencode-advisor",
+    id: "opencode-superadvisor",
     async setup(ctx) {
         const config = loadAdvisorConfig(ctx.options);
         if (config.enabled === false) {
-            console.log("[opencode-advisor] Advisor disabled via config.");
+            console.log("[opencode-superadvisor] Advisor disabled via config.");
             return () => { };
         }
         const watchdog = resolveWatchdog(config);
         const consult = resolveConsult(config);
-        console.log(`[opencode-advisor] watchdog=${watchdog.model} (tools: ${watchdog.tools.join(",")}) ` +
+        console.log(`[opencode-superadvisor] watchdog=${watchdog.model} (tools: ${watchdog.tools.join(",")}) ` +
             `consult=${consult.model} reviewMode=${config.reviewMode} interval=${config.reviewInterval ?? 1}`);
         const pluginCtx = ctx;
         const abortController = new AbortController();
@@ -29,16 +29,16 @@ export const AdvisorPlugin = Plugin.define({
                     }));
                 });
                 disposers.push(() => registration.dispose());
-                console.log("[opencode-advisor] registered consult_advisor tool.");
+                console.log("[opencode-superadvisor] registered consult_advisor tool.");
             }
             catch (err) {
-                console.warn("[opencode-advisor] failed to register consult_advisor:", err instanceof Error ? err.message : String(err));
+                console.warn("[opencode-superadvisor] failed to register consult_advisor:", err instanceof Error ? err.message : String(err));
             }
         }
         // Background watchdog observer.
         startEventObserver(pluginCtx, { config, watchdog }, abortController.signal);
         return async () => {
-            console.log("[opencode-advisor] Unloading advisor plugin...");
+            console.log("[opencode-superadvisor] Unloading advisor plugin...");
             abortController.abort();
             clearAllSessionStates();
             for (const dispose of disposers) {
