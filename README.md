@@ -395,6 +395,95 @@ Then add the `github:...` entry to your config and run `opencode service restart
 
 Create `~/.config/opencode/advisor.json` (see [Configuration](#configuration)). Credentials are inherited automatically from `opencode.jsonc` when omitted.
 
+### 4. Or: let an AI agent install it
+
+Copy the prompt below into any coding agent that has shell access on the target machine. It handles the config edit, the CLI workaround, and verification.
+
+<details>
+<summary><b>Install prompt (English)</b></summary>
+
+```text
+Install and enable the OpenCode plugin "opencode-advisor" on this machine.
+
+Context:
+- It is an OpenCode V2 plugin. Source: https://github.com/Kayphoon/opencode-advisor
+- KNOWN BUG: `opencode plugin add github:...` can fail with
+  "NpmInstallFailedError (cause: Error: git dep preparation failed)" even though a
+  plain `npm install github:...` works. Do NOT retry the CLI repeatedly — use the
+  cache workaround in step 3.
+
+Steps:
+1. Locate the global config at ~/.config/opencode/opencode.jsonc (create it if missing).
+   BACK IT UP first (e.g. copy to opencode.jsonc.bak). Preserve all existing settings.
+2. Add "github:Kayphoon/opencode-advisor" to the plugin array.
+   - Match the key already present in the file: `plugin` or `plugins`. If neither exists, use `plugin`.
+   - If the array already contains other plugins, append; do not replace.
+3. Work around the CLI bug by populating OpenCode's package cache directly:
+     ls -d ~/.cache/opencode/npm/git-opencode-advisor-* 2>/dev/null   # find the slug dir
+     SLUG="$HOME/.cache/opencode/npm/git-opencode-advisor-<HASH>/$(date +%s%3N)"
+     mkdir -p "$SLUG"
+     printf '{"dependencies":{"opencode-advisor":"github:Kayphoon/opencode-advisor"}}\n' > "$SLUG/package.json"
+     ( cd "$SLUG" && npm install --no-audit --no-fund )
+   If no git-opencode-advisor-* directory exists yet, run
+   `opencode plugin add github:Kayphoon/opencode-advisor` once to create it, ignore its error,
+   then run the block above.
+4. Restart the service:  opencode service restart
+5. Verify:  opencode api get /api/plugin
+   Expect an entry: { "id": "opencode-advisor", "source": { "type": "package",
+   "target": "github:Kayphoon/opencode-advisor" }, "state": { "status": "active" } }
+6. (Optional) To use a stronger consultation model, create ~/.config/opencode/advisor.json
+   with { "watchdogModel": "deepseek/deepseek-flash", "consultModel": "<stronger-model-id>" }.
+   If omitted, provider baseURL/apiKey are auto-resolved from opencode.jsonc.
+
+Constraints:
+- Never delete or overwrite unrelated plugin/config entries.
+- If step 5 does not show "active", paste the FULL error back to me. Do not loop retrying.
+```
+
+</details>
+
+<details>
+<summary><b>安装提示词（中文）</b></summary>
+
+```text
+请在这台机器上安装并启用 OpenCode 插件 opencode-advisor。
+
+背景：
+- 这是一个 OpenCode V2 插件，源码：https://github.com/Kayphoon/opencode-advisor
+- 已知 BUG：`opencode plugin add github:...` 会报
+  "NpmInstallFailedError (cause: Error: git dep preparation failed)"，
+  但直接用 `npm install github:...` 是正常的。不要反复重试 CLI，请使用第 3 步的缓存绕过方案。
+
+步骤：
+1. 找到全局配置 ~/.config/opencode/opencode.jsonc（不存在则创建）。
+   先备份（例如复制为 opencode.jsonc.bak），并完整保留其他已有配置。
+2. 在插件数组中加入 "github:Kayphoon/opencode-advisor"。
+   - 匹配文件中已存在的键名：`plugin` 或 `plugins`；若都不存在则用 `plugin`。
+   - 若数组里已有其他插件，请追加，不要覆盖。
+3. 绕过 CLI BUG，直接填充 OpenCode 的插件缓存：
+     ls -d ~/.cache/opencode/npm/git-opencode-advisor-* 2>/dev/null   # 找到 slug 目录
+     SLUG="$HOME/.cache/opencode/npm/git-opencode-advisor-<HASH>/$(date +%s%3N)"
+     mkdir -p "$SLUG"
+     printf '{"dependencies":{"opencode-advisor":"github:Kayphoon/opencode-advisor"}}\n' > "$SLUG/package.json"
+     ( cd "$SLUG" && npm install --no-audit --no-fund )
+   若还没有 git-opencode-advisor-* 目录，先执行一次
+   `opencode plugin add github:Kayphoon/opencode-advisor` 生成目录（忽略它的报错），
+   再执行上面的命令块。
+4. 重启服务：opencode service restart
+5. 验证：opencode api get /api/plugin
+   应出现：{ "id": "opencode-advisor", "source": { "type": "package",
+   "target": "github:Kayphoon/opencode-advisor" }, "state": { "status": "active" } }
+6. （可选）若想用更强的顾问模型，创建 ~/.config/opencode/advisor.json，
+   内容如 { "watchdogModel": "deepseek/deepseek-flash", "consultModel": "<更强的模型ID>" }。
+   不创建时会自动继承 opencode.jsonc 中对应 provider 的 baseURL 与 apiKey。
+
+约束：
+- 绝对不要删除或覆盖无关的插件与配置项。
+- 若第 5 步没有显示 active，请把完整报错原样贴给我，不要循环重试。
+```
+
+</details>
+
 ---
 
 ## Development
