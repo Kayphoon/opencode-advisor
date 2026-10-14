@@ -11,15 +11,31 @@ function renderContext(messages, limit) {
             continue;
         const role = (msg.type || "message").toUpperCase();
         let body = msg.text || "";
-        if (msg.parts && msg.parts.length > 0) {
+        const items = (msg.content || msg.parts || []);
+        if (items.length > 0) {
             const sub = [];
-            for (const p of msg.parts) {
+            for (const p of items) {
                 if (p.metadata?.["advisor"] === true)
                     continue;
-                if (p.text)
-                    sub.push(p.text);
-                if (p.output)
-                    sub.push(`[Tool Output]:\n${truncateToolOutput(p.output, 12, 4)}`);
+                if (typeof p["text"] === "string" && p["text"])
+                    sub.push(p["text"]);
+                if (p["type"] === "tool" || p["name"]) {
+                    const toolName = p["name"] || p["type"];
+                    const state = p["state"];
+                    let outputText = "";
+                    if (Array.isArray(state?.["content"])) {
+                        outputText = state["content"]
+                            .map((c) => String(c["text"] || ""))
+                            .join("\n");
+                    }
+                    else if (typeof p["output"] === "string") {
+                        outputText = p["output"];
+                    }
+                    sub.push(`[Tool ${toolName} Output]:\n${truncateToolOutput(outputText, 12, 4)}`);
+                }
+                else if (typeof p["output"] === "string") {
+                    sub.push(`[Tool Output]:\n${truncateToolOutput(p["output"], 12, 4)}`);
+                }
             }
             if (sub.length > 0)
                 body = sub.join("\n");

@@ -44,15 +44,37 @@ export function extractSessionDelta(allMessages, lastEvaluatedID, rollingSummary
         if (role === "assistant" || role === "shell") {
             meaningfulAssistantText = true;
         }
+        const items = msg.content || msg.parts || [];
         let renderedText = body;
-        if (msg.parts && msg.parts.length > 0) {
+        if (items.length > 0) {
             const partTexts = [];
-            for (const p of msg.parts) {
+            if (body.trim())
+                partTexts.push(body);
+            for (const p of items) {
                 if (p.metadata?.["advisor"] === true)
                     continue;
-                if (p.text)
+                if (p.type === "text" && p.text) {
                     partTexts.push(p.text);
-                if (p.output) {
+                    meaningfulAssistantText = true;
+                }
+                else if (p.type === "tool" || p.name) {
+                    meaningfulAssistantText = true;
+                    const toolName = p.name || p.type || "tool";
+                    let outputText = "";
+                    if (p.state?.content && Array.isArray(p.state.content)) {
+                        outputText = p.state.content.map((c) => c.text || "").join("\n");
+                    }
+                    else if (typeof p.output === "string") {
+                        outputText = p.output;
+                    }
+                    const inputStr = p.state?.input ? JSON.stringify(p.state.input) : "";
+                    partTexts.push(`[Tool Call: ${toolName}] ${inputStr}\n[Tool Output]:\n${truncateToolOutput(outputText)}`);
+                }
+                else if (p.text) {
+                    partTexts.push(p.text);
+                    meaningfulAssistantText = true;
+                }
+                else if (p.output) {
                     partTexts.push(`[Tool Output]:\n${truncateToolOutput(p.output)}`);
                 }
             }

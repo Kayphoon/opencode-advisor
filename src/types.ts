@@ -145,6 +145,7 @@ export interface SessionMessageLike {
   text?: string;
   metadata?: Record<string, unknown>;
   description?: string;
+  content?: Array<Record<string, unknown>>;
   parts?: Array<{
     type?: string;
     text?: string;

@@ -1,16 +1,25 @@
+export interface RawPart {
+  type?: string;
+  name?: string;
+  text?: string;
+  synthetic?: boolean;
+  metadata?: Record<string, unknown>;
+  output?: string;
+  state?: {
+    status?: string;
+    input?: unknown;
+    content?: Array<{ type?: string; text?: string }>;
+  };
+}
+
 export interface RawMessage {
   id: string;
   type?: string;
   text?: string;
   metadata?: Record<string, unknown>;
   description?: string;
-  parts?: Array<{
-    type?: string;
-    text?: string;
-    synthetic?: boolean;
-    metadata?: Record<string, unknown>;
-    output?: string;
-  }>;
+  content?: RawPart[];
+  parts?: RawPart[];
 }
 
 export function truncateToolOutput(text: string, headLines = 30, tailLines = 10): string {
@@ -75,13 +84,33 @@ export function extractSessionDelta(
       meaningfulAssistantText = true;
     }
 
+    const items = msg.content || msg.parts || [];
     let renderedText = body;
-    if (msg.parts && msg.parts.length > 0) {
+    if (items.length > 0) {
       const partTexts: string[] = [];
-      for (const p of msg.parts) {
+      if (body.trim()) partTexts.push(body);
+      for (const p of items) {
         if (p.metadata?.["advisor"] === true) continue;
-        if (p.text) partTexts.push(p.text);
-        if (p.output) {
+        if (p.type === "text" && p.text) {
+          partTexts.push(p.text);
+          meaningfulAssistantText = true;
+        } else if (p.type === "tool" || p.name) {
+          meaningfulAssistantText = true;
+          const toolName = p.name || p.type || "tool";
+          let outputText = "";
+          if (p.state?.content && Array.isArray(p.state.content)) {
+            outputText = p.state.content.map((c) => c.text || "").join("\n");
+          } else if (typeof p.output === "string") {
+            outputText = p.output;
+          }
+          const inputStr = p.state?.input ? JSON.stringify(p.state.input) : "";
+          partTexts.push(
+            `[Tool Call: ${toolName}] ${inputStr}\n[Tool Output]:\n${truncateToolOutput(outputText)}`
+          );
+        } else if (p.text) {
+          partTexts.push(p.text);
+          meaningfulAssistantText = true;
+        } else if (p.output) {
           partTexts.push(`[Tool Output]:\n${truncateToolOutput(p.output)}`);
         }
       }
