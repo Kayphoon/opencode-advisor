@@ -1,6 +1,6 @@
 {
   "name": "opencode-superadvisor",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "type": "module",
   "description": "Dual-engine advisor plugin for OpenCode V2: an OMP-style background watchdog plus an on-demand consult tool, with evidence-based fact-checking and anti-loop safety.",
   "main": "./dist/index.js",

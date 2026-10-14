@@ -1,3 +1,4 @@
+import { putAdvisorInstruction, removeAdvisorInstruction } from "./instructions.js";
 /** Render one note, including verified evidence and any suggested patch. */
 export function formatNote(item) {
     let text = `[advisor:${item.severity}] ${item.note}`;
@@ -10,52 +11,71 @@ export function formatNote(item) {
     }
     return text;
 }
+/**
+ * Dual-channel delivery:
+ * 1. Non-blockers (`nit`, `concern`) are attached via Instruction Entry
+ *    (<context key="advisor">...</context>). This injects the advice into the
+ *    model's next-step prompt without triggering a fake user message or redundant chat turn.
+ * 2. Blockers are delivered as an immediate steer_waking prompt to halt execution and correct course.
+ */
 export async function deliverNotes(notes, sessionID, state, config, client) {
-    for (const item of notes) {
-        const formattedText = formatNote(item);
-        if (item.severity === "blocker") {
-            // HARD CIRCUIT BREAKER: at most one waking interrupt per user turn.
-            if (state.consecutiveAdvisorTurns >= 1) {
-                console.warn(`[advisor] Circuit breaker tripped for session ${sessionID}. Degrading blocker to non-waking synthetic.`);
+    const blockers = notes.filter((n) => n.severity === "blocker");
+    const nonBlockers = notes.filter((n) => n.severity !== "blocker");
+    // 1. Non-blockers -> Instruction Entry (Context Injection)
+    if (nonBlockers.length > 0) {
+        const instructionBody = nonBlockers.map(formatNote).join("\n\n");
+        await putAdvisorInstruction(sessionID, instructionBody);
+        // Keep inbox synthetic record for auditing without waking execution
+        for (const item of nonBlockers) {
+            try {
                 await client.session.synthetic({
                     sessionID,
-                    text: `${formattedText}\n  (auto-wake suppressed by circuit breaker until the next user message)`,
-                    metadata: { advisor: true, severity: "blocker", degraded: true },
+                    text: formatNote(item),
+                    metadata: { advisor: true, severity: item.severity },
                     resume: false,
                     delivery: "queue",
                 });
-                continue;
             }
-            try {
-                await client.session.prompt({
-                    sessionID,
-                    text: formattedText,
-                    metadata: { advisor: true, severity: "blocker" },
-                    delivery: "steer",
-                    resume: true,
-                });
-                state.consecutiveAdvisorTurns += 1;
-                state.immuneUntilUserTurn = state.userTurnCount + (config.immuneTurns ?? 3);
-                console.log(`[advisor] Waking blocker delivered to ${sessionID}.`);
-            }
-            catch (err) {
-                console.error(`[advisor] Failed to deliver waking prompt:`, err);
+            catch {
+                // best-effort inbox logging
             }
         }
-        else {
-            try {
-                await client.session.synthetic({
-                    sessionID,
-                    text: formattedText,
-                    metadata: { advisor: true, severity: item.severity },
-                    resume: false,
-                    delivery: "steer",
-                });
-                console.log(`[advisor] Non-waking ${item.severity} delivered to ${sessionID}.`);
-            }
-            catch (err) {
-                console.error(`[advisor] Failed to deliver synthetic message:`, err);
-            }
+        console.log(`[advisor] Attached ${nonBlockers.length} advisory notes into instructions for ${sessionID}.`);
+    }
+    else if (blockers.length === 0) {
+        // Clean review with no blockers: clean up instruction entry
+        await removeAdvisorInstruction(sessionID);
+    }
+    // 2. Blockers -> Direct chat message with immediate waking interrupt
+    for (const item of blockers) {
+        const formattedText = formatNote(item);
+        // HARD CIRCUIT BREAKER: at most one waking interrupt per user turn.
+        if (state.consecutiveAdvisorTurns >= 1) {
+            console.warn(`[advisor] Circuit breaker tripped for session ${sessionID}. Degrading blocker to non-waking instruction.`);
+            await putAdvisorInstruction(sessionID, `${formattedText}\n(auto-wake suppressed by circuit breaker until next user turn)`);
+            await client.session.synthetic({
+                sessionID,
+                text: `${formattedText}\n  (auto-wake suppressed by circuit breaker until the next user message)`,
+                metadata: { advisor: true, severity: "blocker", degraded: true },
+                resume: false,
+                delivery: "queue",
+            });
+            continue;
+        }
+        try {
+            await client.session.prompt({
+                sessionID,
+                text: formattedText,
+                metadata: { advisor: true, severity: "blocker" },
+                delivery: "steer",
+                resume: true,
+            });
+            state.consecutiveAdvisorTurns += 1;
+            state.immuneUntilUserTurn = state.userTurnCount + (config.immuneTurns ?? 3);
+            console.log(`[advisor] Waking blocker delivered to ${sessionID}.`);
+        }
+        catch (err) {
+            console.error(`[advisor] Failed to deliver waking prompt:`, err);
         }
     }
 }
