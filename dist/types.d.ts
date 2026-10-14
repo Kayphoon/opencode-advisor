@@ -67,6 +67,11 @@ export interface AdvisorConfig {
      * `concern`. "Whoever asserts must prove."
      */
     requireEvidence?: boolean;
+    /**
+     * When true (default), directly outputs a visible clean review status in the chat history
+     * after each review turn, matching OMP watchdog behavior.
+     */
+    showClean?: boolean;
     consult?: AdvisorConsultConfig;
 }
 /** Fully resolved model settings for one role (watchdog or consult). */

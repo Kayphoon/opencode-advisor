@@ -82,6 +82,22 @@ export function startEventObserver(ctx, deps, rootSignal) {
                     console.log(`[advisor] Delivering ${guardedNotes.length} notes to session ${sessionID}.`);
                     await deliverNotes(guardedNotes, sessionID, state, config, ctx);
                 }
+                else if (config.showClean !== false) {
+                    const cleanText = `🔍 **[Advisor]** ✓ 巡查完成：事实一致，未发现缺陷。`;
+                    try {
+                        await ctx.session.synthetic({
+                            sessionID,
+                            text: cleanText,
+                            metadata: { advisor: true, clean: true },
+                            resume: false,
+                            delivery: "steer",
+                        });
+                        console.log(`[advisor] Clean review status delivered to ${sessionID}.`);
+                    }
+                    catch (err) {
+                        console.warn(`[advisor] Failed to deliver clean review status:`, err);
+                    }
+                }
                 state.lastEvaluatedMessageID = newLastID;
             }
             catch (err) {

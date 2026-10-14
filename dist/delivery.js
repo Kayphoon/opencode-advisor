@@ -49,7 +49,7 @@ export async function deliverNotes(notes, sessionID, state, config, client) {
                     text: formattedText,
                     metadata: { advisor: true, severity: item.severity },
                     resume: false,
-                    delivery: "queue",
+                    delivery: "steer",
                 });
                 console.log(`[advisor] Non-waking ${item.severity} delivered to ${sessionID}.`);
             }
