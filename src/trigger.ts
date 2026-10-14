@@ -5,7 +5,7 @@ import { filterAndGuardNotes } from "./guard.js";
 import { deliverNotes } from "./delivery.js";
 import { removeAdvisorInstruction } from "./instructions.js";
 import { collectDeterministicSignals } from "./enrich.js";
-import type { AdvisorConfig, OpenCodeV2Event, PluginContextLike, ResolvedModelConfig } from "./types.js";
+import type { AdvisorConfig, OpenCodeV2Event, PluginContextLike, ResolvedModelConfig, SessionMessageLike } from "./types.js";
 
 export type { PluginContextLike };
 
@@ -52,6 +52,19 @@ function extractDiagnostics(event: OpenCodeV2Event): string[] {
   return list;
 }
 
+export function extractSessionID(event: OpenCodeV2Event): string {
+  const candidate =
+    (event.durable?.aggregateID as string) ||
+    (event.data?.["sessionID"] as string) ||
+    (event.data?.["id"] as string) ||
+    ((event as unknown as Record<string, unknown>)["sessionID"] as string) ||
+    "";
+  if (typeof candidate === "string" && candidate.startsWith("ses")) {
+    return candidate;
+  }
+  return "";
+}
+
 export function startEventObserver(ctx: PluginContextLike, deps: ObserverDeps, rootSignal: AbortSignal): void {
   const { config, watchdog } = deps;
   const reviewInterval = Math.max(1, config.reviewInterval ?? 1);
@@ -80,7 +93,10 @@ export function startEventObserver(ctx: PluginContextLike, deps: ObserverDeps, r
       const timeout = setTimeout(() => reviewAbort.abort(), watchdog.timeoutMs);
 
       try {
-        const messages = await ctx.session.context({ sessionID });
+        const raw = await ctx.session.context({ sessionID });
+        const messages = Array.isArray(raw)
+          ? raw
+          : ((raw as { data?: SessionMessageLike[] })?.data || []);
         if (!messages || messages.length === 0) return;
 
         const signals = await collectDeterministicSignals(ctx, state, reviewAbort.signal);
@@ -102,7 +118,7 @@ export function startEventObserver(ctx: PluginContextLike, deps: ObserverDeps, r
 
         const rawNotes = await runReviewerAgent(
           deltaText,
-          workspaceDir || ctx.location.directory,
+          workspaceDir || ctx.location?.directory || process.cwd(),
           watchdog,
           config.requireEvidence !== false,
           reviewAbort.signal
@@ -119,6 +135,21 @@ export function startEventObserver(ctx: PluginContextLike, deps: ObserverDeps, r
         } else {
           // All clear: remove any lingering advisor context instructions
           await removeAdvisorInstruction(sessionID);
+          if (config.showClean !== false) {
+            const cleanText = `🔍 **[SuperAdvisor]** ✓ 巡查完成：事实一致，未发现缺陷。(此消息为只读巡检通知，无需回复)`;
+            try {
+              await ctx.session.synthetic({
+                sessionID,
+                text: cleanText,
+                metadata: { advisor: true, clean: true },
+                resume: false,
+                delivery: "steer",
+              });
+              console.log(`[advisor] Clean review status delivered to ${sessionID}.`);
+            } catch (err: unknown) {
+              console.warn(`[advisor] Failed to deliver clean review status:`, err);
+            }
+          }
         }
 
         state.lastEvaluatedMessageID = newLastID;
@@ -141,12 +172,10 @@ export function startEventObserver(ctx: PluginContextLike, deps: ObserverDeps, r
       for await (const event of ctx.event.subscribe({ signal: rootSignal })) {
         if (rootSignal.aborted) break;
 
-        const sessionID =
-          (event.data?.["sessionID"] as string) || (event.data?.["id"] as string) || "";
-        if (!sessionID || !sessionID.startsWith("ses")) continue;
+        const sessionID = extractSessionID(event);
+        if (!sessionID) continue;
 
-        const eventDir = event.location?.directory || ctx.location.directory;
-        if (ctx.location.directory && eventDir !== ctx.location.directory) continue;
+        const eventDir = event.location?.directory || ctx.location?.directory || process.cwd();
 
         // Deterministic signals: capture LSP diagnostics as they stream.
         if (isDiagnosticEvent(event.type)) {
@@ -160,7 +189,12 @@ export function startEventObserver(ctx: PluginContextLike, deps: ObserverDeps, r
           event.type === "session.prompt" ||
           event.type === "session.message.content.updated"
         ) {
-          const meta = event.data?.["metadata"] as Record<string, unknown> | undefined;
+          const payloadMeta = (
+            (event.data?.["item"] as Record<string, unknown> | undefined)?.["payload"] as
+              | Record<string, unknown>
+              | undefined
+          )?.["metadata"] as Record<string, unknown> | undefined;
+          const meta = (event.data?.["metadata"] as Record<string, unknown> | undefined) || payloadMeta;
           if (!meta || meta["advisor"] !== true) {
             resetConsecutiveAdvisorTurns(sessionID);
           }

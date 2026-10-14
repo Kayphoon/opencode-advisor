@@ -132,6 +132,11 @@ export interface OpenCodeV2Event {
   id?: string;
   created?: number;
   type: string;
+  durable?: {
+    aggregateID?: string;
+    seq?: number;
+    version?: number;
+  };
   location?: {
     directory?: string;
     workspaceID?: string;

@@ -94,7 +94,10 @@ export function createConsultTool(deps: ConsultDeps): NativeToolDefinition {
 
       let renderedContext = "";
       try {
-        const messages = await getContextMessages(context.sessionID);
+        const raw = await getContextMessages(context.sessionID);
+        const messages = Array.isArray(raw)
+          ? raw
+          : ((raw as unknown as { data?: SessionMessageLike[] })?.data || []);
         renderedContext = renderContext(messages, includeContextMessages);
       } catch {
         renderedContext = "";

@@ -39,6 +39,17 @@ function extractDiagnostics(event) {
         push(data["diagnostic"]);
     return list;
 }
+export function extractSessionID(event) {
+    const candidate = event.durable?.aggregateID ||
+        event.data?.["sessionID"] ||
+        event.data?.["id"] ||
+        event["sessionID"] ||
+        "";
+    if (typeof candidate === "string" && candidate.startsWith("ses")) {
+        return candidate;
+    }
+    return "";
+}
 export function startEventObserver(ctx, deps, rootSignal) {
     const { config, watchdog } = deps;
     const reviewInterval = Math.max(1, config.reviewInterval ?? 1);
@@ -64,7 +75,10 @@ export function startEventObserver(ctx, deps, rootSignal) {
             state.abortController = reviewAbort;
             const timeout = setTimeout(() => reviewAbort.abort(), watchdog.timeoutMs);
             try {
-                const messages = await ctx.session.context({ sessionID });
+                const raw = await ctx.session.context({ sessionID });
+                const messages = Array.isArray(raw)
+                    ? raw
+                    : (raw?.data || []);
                 if (!messages || messages.length === 0)
                     return;
                 const signals = await collectDeterministicSignals(ctx, state, reviewAbort.signal);
@@ -74,7 +88,7 @@ export function startEventObserver(ctx, deps, rootSignal) {
                     return;
                 }
                 console.log(`[advisor] Reviewing delta for session ${sessionID} (${deltaText.length} chars)...`);
-                const rawNotes = await runReviewerAgent(deltaText, workspaceDir || ctx.location.directory, watchdog, config.requireEvidence !== false, reviewAbort.signal);
+                const rawNotes = await runReviewerAgent(deltaText, workspaceDir || ctx.location?.directory || process.cwd(), watchdog, config.requireEvidence !== false, reviewAbort.signal);
                 const guardedNotes = filterAndGuardNotes(rawNotes, state, {
                     maxNotes: config.maxNotesPerUpdate ?? 3,
                     requireEvidence: config.requireEvidence !== false,
@@ -86,6 +100,22 @@ export function startEventObserver(ctx, deps, rootSignal) {
                 else {
                     // All clear: remove any lingering advisor context instructions
                     await removeAdvisorInstruction(sessionID);
+                    if (config.showClean !== false) {
+                        const cleanText = `🔍 **[SuperAdvisor]** ✓ 巡查完成：事实一致，未发现缺陷。(此消息为只读巡检通知，无需回复)`;
+                        try {
+                            await ctx.session.synthetic({
+                                sessionID,
+                                text: cleanText,
+                                metadata: { advisor: true, clean: true },
+                                resume: false,
+                                delivery: "steer",
+                            });
+                            console.log(`[advisor] Clean review status delivered to ${sessionID}.`);
+                        }
+                        catch (err) {
+                            console.warn(`[advisor] Failed to deliver clean review status:`, err);
+                        }
+                    }
                 }
                 state.lastEvaluatedMessageID = newLastID;
             }
@@ -107,12 +137,10 @@ export function startEventObserver(ctx, deps, rootSignal) {
             for await (const event of ctx.event.subscribe({ signal: rootSignal })) {
                 if (rootSignal.aborted)
                     break;
-                const sessionID = event.data?.["sessionID"] || event.data?.["id"] || "";
-                if (!sessionID || !sessionID.startsWith("ses"))
+                const sessionID = extractSessionID(event);
+                if (!sessionID)
                     continue;
-                const eventDir = event.location?.directory || ctx.location.directory;
-                if (ctx.location.directory && eventDir !== ctx.location.directory)
-                    continue;
+                const eventDir = event.location?.directory || ctx.location?.directory || process.cwd();
                 // Deterministic signals: capture LSP diagnostics as they stream.
                 if (isDiagnosticEvent(event.type)) {
                     const diagnostics = extractDiagnostics(event);
@@ -123,7 +151,8 @@ export function startEventObserver(ctx, deps, rootSignal) {
                 if (event.type === "session.inbox.enqueued" ||
                     event.type === "session.prompt" ||
                     event.type === "session.message.content.updated") {
-                    const meta = event.data?.["metadata"];
+                    const payloadMeta = event.data?.["item"]?.["payload"]?.["metadata"];
+                    const meta = event.data?.["metadata"] || payloadMeta;
                     if (!meta || meta["advisor"] !== true) {
                         resetConsecutiveAdvisorTurns(sessionID);
                     }

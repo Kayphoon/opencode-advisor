@@ -4,6 +4,7 @@ import { resolveSafePath } from "../tools/safe-fs.js";
 import { extractSessionDelta } from "../transcript.js";
 import { filterAndGuardNotes } from "../guard.js";
 import { deliverNotes, formatNote } from "../delivery.js";
+import { extractSessionID } from "../trigger.js";
 import type { AdvisorSessionState, AdviceNote } from "../types.js";
 
 function makeState(overrides: Partial<AdvisorSessionState> = {}): AdvisorSessionState {
@@ -125,4 +126,42 @@ test("deliverNotes trips the circuit breaker on a second consecutive blocker", a
 
   assert.equal(syntheticCalled, true);
   assert.equal(promptCalled, false); // waking prompt must be blocked
+});
+
+test("extractSessionID extracts aggregateID from durable events and sessionID from data", () => {
+  // Durable event (session.step.ended, session.execution.succeeded, etc.)
+  assert.equal(
+    extractSessionID({
+      type: "session.step.ended",
+      durable: { aggregateID: "ses_123456789" },
+    }),
+    "ses_123456789"
+  );
+
+  // Ephemeral event (session.idle)
+  assert.equal(
+    extractSessionID({
+      type: "session.idle",
+      data: { sessionID: "ses_987654321" },
+    }),
+    "ses_987654321"
+  );
+
+  // Fallback to data.id
+  assert.equal(
+    extractSessionID({
+      type: "session.created",
+      data: { id: "ses_fallback" },
+    }),
+    "ses_fallback"
+  );
+
+  // Non-session ID should return empty string
+  assert.equal(
+    extractSessionID({
+      type: "session.step.ended",
+      data: { id: "msg_12345" },
+    }),
+    ""
+  );
 });

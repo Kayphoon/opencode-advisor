@@ -83,7 +83,10 @@ export function createConsultTool(deps) {
             const apiKey = consult.provider.apiKey || "default-key";
             let renderedContext = "";
             try {
-                const messages = await getContextMessages(context.sessionID);
+                const raw = await getContextMessages(context.sessionID);
+                const messages = Array.isArray(raw)
+                    ? raw
+                    : (raw?.data || []);
                 renderedContext = renderContext(messages, includeContextMessages);
             }
             catch {
