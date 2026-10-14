@@ -121,7 +121,7 @@ export function resolveWatchdog(config: AdvisorConfig): ResolvedModelConfig {
     maxToolSteps: Math.min(5, Math.max(1, config.maxToolSteps ?? 3)),
     timeoutMs: config.timeoutMs ?? 25000,
     tools: config.tools ?? ["read", "grep", "glob"],
-    maxTokens: 768,
+    maxTokens: config.maxTokens,
     temperature: 0.1,
   };
 }
@@ -140,7 +140,7 @@ export function resolveConsult(config: AdvisorConfig): ResolvedModelConfig {
     maxToolSteps: 0,
     timeoutMs: config.timeoutMs ?? 25000,
     tools: [],
-    maxTokens: consult.maxTokens ?? 1024,
+    maxTokens: consult.maxTokens ?? config.maxTokens,
     temperature: 0.2,
   };
 }

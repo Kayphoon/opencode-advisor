@@ -55,8 +55,10 @@ export async function callChatCompletion(options: ChatCompletionOptions): Promis
     model: modelName,
     messages,
     temperature: temperature ?? 0.1,
-    max_tokens: maxTokens ?? 768,
   };
+  if (typeof maxTokens === "number" && maxTokens > 0) {
+    payload["max_tokens"] = maxTokens;
+  }
   if (tools && tools.length > 0) {
     payload["tools"] = tools;
     payload["tool_choice"] = "auto";
@@ -83,8 +85,13 @@ export async function callChatCompletion(options: ChatCompletionOptions): Promis
   }
 
   try {
-    const json = (await response.json()) as { choices?: Array<{ message?: ChatMessage }> };
+    const json = (await response.json()) as {
+      choices?: Array<{ message?: ChatMessage & { reasoning_content?: string } }>;
+    };
     const message = json?.choices?.[0]?.message ?? null;
+    if (message && !message.content && message.reasoning_content) {
+      message.content = message.reasoning_content;
+    }
     return { message };
   } catch {
     return { message: null, error: "invalid JSON response" };

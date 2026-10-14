@@ -58,6 +58,7 @@ export interface AdvisorConfig {
     maxNotesPerUpdate?: number;
     immuneTurns?: number;
     timeoutMs?: number;
+    maxTokens?: number;
     tools?: string[];
     delivery?: AdvisorDeliveryConfig;
     systemPrompt?: string;
@@ -78,7 +79,7 @@ export interface ResolvedModelConfig {
     maxToolSteps: number;
     timeoutMs: number;
     tools: string[];
-    maxTokens: number;
+    maxTokens?: number;
     temperature: number;
 }
 export interface ToolDefinition {

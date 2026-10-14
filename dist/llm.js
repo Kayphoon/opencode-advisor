@@ -16,8 +16,10 @@ export async function callChatCompletion(options) {
         model: modelName,
         messages,
         temperature: temperature ?? 0.1,
-        max_tokens: maxTokens ?? 768,
     };
+    if (typeof maxTokens === "number" && maxTokens > 0) {
+        payload["max_tokens"] = maxTokens;
+    }
     if (tools && tools.length > 0) {
         payload["tools"] = tools;
         payload["tool_choice"] = "auto";
@@ -44,6 +46,9 @@ export async function callChatCompletion(options) {
     try {
         const json = (await response.json());
         const message = json?.choices?.[0]?.message ?? null;
+        if (message && !message.content && message.reasoning_content) {
+            message.content = message.reasoning_content;
+        }
         return { message };
     }
     catch {
