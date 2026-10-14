@@ -87,7 +87,7 @@ export function loadAdvisorConfig(options) {
         timeoutMs: 25000,
         tools: ["read", "grep", "glob"],
         requireEvidence: true,
-        showClean: true,
+        showClean: false,
         delivery: {
             nit: "synthetic_noreply",
             concern: "synthetic_noreply",

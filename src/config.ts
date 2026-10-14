@@ -99,7 +99,7 @@ export function loadAdvisorConfig(options?: Record<string, unknown>): AdvisorCon
     timeoutMs: 25000,
     tools: ["read", "grep", "glob"],
     requireEvidence: true,
-    showClean: true,
+    showClean: false,
     delivery: {
       nit: "synthetic_noreply",
       concern: "synthetic_noreply",

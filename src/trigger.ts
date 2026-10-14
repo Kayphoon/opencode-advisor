@@ -135,21 +135,6 @@ export function startEventObserver(ctx: PluginContextLike, deps: ObserverDeps, r
         } else {
           // All clear: remove any lingering advisor context instructions
           await removeAdvisorInstruction(sessionID);
-          if (config.showClean !== false) {
-            const cleanText = `🔍 **[SuperAdvisor]** ✓ 巡查完成：事实一致，未发现缺陷。(此消息为只读巡检通知，无需回复)`;
-            try {
-              await ctx.session.synthetic({
-                sessionID,
-                text: cleanText,
-                metadata: { advisor: true, clean: true },
-                resume: false,
-                delivery: "steer",
-              });
-              console.log(`[advisor] Clean review status delivered to ${sessionID}.`);
-            } catch (err: unknown) {
-              console.warn(`[advisor] Failed to deliver clean review status:`, err);
-            }
-          }
         }
 
         state.lastEvaluatedMessageID = newLastID;
